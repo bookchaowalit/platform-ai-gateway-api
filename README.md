@@ -68,3 +68,10 @@ unknown arguments are rejected before any HTTP call. Errors are a fixed message 
 - Run: `npm install`, then `npm run mcp` or `node mcp/bin.mjs` (see `.mcp.json`; `bin: ai-gateway-mcp`). It runs through
   `tsx`; the hosted service build and Dockerfile do not use it.
 - Tests: `npm test` (`tests/ai_gateway_mcp.test.ts`; fake `fetch`, in-memory MCP client, no network).
+
+## Staged shared admission
+
+The default production behavior remains unchanged. Explicit workspace JWT and
+shared rate/budget admission are available for staged multi-replica verification.
+See [configuration, durable-charge semantics and release gates](docs/shared-admission.md).
+This code has not activated a new issuer, admission service or production replica.
