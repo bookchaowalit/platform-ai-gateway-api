@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { AiBudgetError, type AiBudgetGuard } from './ai_budget.js';
+import type { AiAttemptAdmission, AiAttemptReservation } from './ai_shared_admission.js';
 
 export const AI_GATEWAY_CONTRACT = 'solo-empire.ai-gateway.v1';
 export const AI_TELEMETRY_CONTRACT = 'solo-empire.ai-telemetry.v1';
@@ -112,6 +113,7 @@ export interface AiGatewayStatus {
 
 export interface AiGenerateOptions {
   budgetGuard?: AiBudgetGuard;
+  attemptAdmission?: AiAttemptAdmission;
   recordTelemetry?: (event: AiTelemetryEvent) => void;
 }
 
@@ -637,6 +639,13 @@ export async function generateAi(input: unknown, env: NodeJS.ProcessEnv = proces
     ? [config.fallbackInputRatePer1k, config.fallbackOutputRatePer1k]
     : [config.inputRatePer1k, config.outputRatePer1k];
   const estimateFor = (fallback: boolean) => costFor(estimatedInputTokens, request.maxOutputTokens, ...ratesFor(fallback));
+  // Shared microUSD ceilings must use the unrounded cost. Telemetry retains its
+  // historical eight-decimal representation for backwards compatibility.
+  const sharedCostFor = (input: number, output: number, fallback: boolean): number | null => {
+    const [inputRate, outputRate] = ratesFor(fallback);
+    return inputRate === null || outputRate === null ? null : (input * inputRate + output * outputRate) / 1000;
+  };
+  const sharedEstimateFor = (fallback: boolean) => sharedCostFor(estimatedInputTokens, request.maxOutputTokens, fallback);
 
   const reserve = async (model: string, fallback: boolean): Promise<(() => void) | undefined> => {
     try {
@@ -663,7 +672,9 @@ export async function generateAi(input: unknown, env: NodeJS.ProcessEnv = proces
   };
 
   let releaseBudget = await reserve(primaryModel, false);
+  let sharedReservation: AiAttemptReservation | undefined;
   try {
+    sharedReservation = await options.attemptAdmission?.reserve(sharedEstimateFor(false));
     let outcome = await callProvider(config, request, primaryModel);
     let primaryFailure: AttemptFailure | null = null;
     if (outcome.kind === 'failure' && outcome.retryable && fallbackModel) {
@@ -671,6 +682,8 @@ export async function generateAi(input: unknown, env: NodeJS.ProcessEnv = proces
       // The failed primary attempt is its own ledger row so its (possibly
       // billed) cost is persisted before the reservation is released.
       record(failureTelemetry(randomUUID(), outcome, false, roundedLatency(started), { attempt: 'primary', parent_run_id: runId }));
+      await sharedReservation?.settle(null);
+      sharedReservation = undefined;
       releaseBudget?.();
       releaseBudget = undefined;
       try {
@@ -681,6 +694,7 @@ export async function generateAi(input: unknown, env: NodeJS.ProcessEnv = proces
         }
         throw error;
       }
+      sharedReservation = await options.attemptAdmission?.reserve(sharedEstimateFor(true));
       outcome = await callProvider(config, request, fallbackModel);
     }
     const fallbackUsed = primaryFailure !== null;
@@ -690,6 +704,7 @@ export async function generateAi(input: unknown, env: NodeJS.ProcessEnv = proces
 
     const latencyMs = roundedLatency(started);
     if (outcome.kind === 'failure') {
+      await sharedReservation?.settle(null);
       throw new AiGatewayError(outcome.status, outcome.message, failureTelemetry(runId, outcome, fallbackUsed, latencyMs, fallbackMetadata));
     }
 
@@ -728,6 +743,7 @@ export async function generateAi(input: unknown, env: NodeJS.ProcessEnv = proces
       },
     };
     record(telemetry);
+    await sharedReservation?.settle(inputTokens !== null && outputTokens !== null ? sharedCostFor(inputTokens, outputTokens, fallbackUsed) : null);
     return {
       response: {
         contract: AI_GATEWAY_CONTRACT,
