@@ -13,5 +13,8 @@
   },
   "devDependencies": {
     "esbuild": "0.28.1"
+  },
+  "dependencies": {
+    "@sentry/node": "11.4.0"
   }
 }

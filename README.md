@@ -35,8 +35,9 @@ npm run build
 
 ## Deploy
 
-Railway variables hold every secret (`API_TOKENS_JSON`, upstream keys); none
-live in this repository.
+Railway variables hold every secret (`API_TOKENS_JSON`, upstream keys, `SENTRY_DSN`);
+none live in this repository. `SENTRY_DSN` turns on error reporting (unset = off; see
+`api/ai-gateway-service/sentry.ts`), with `SENTRY_ENVIRONMENT`.
 
 ```bash
 railway link --project solo-ai-gateway --service ai-gateway --environment production
