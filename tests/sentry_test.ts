@@ -77,7 +77,7 @@ test('scrub removes URL passwords, key=value secrets, bearer tokens and JWTs', (
   assert.ok(out.includes(`${scheme}gw:***@db.example.test/gw`));
 });
 
-test('scrubEvent keeps only request method and path, drops extra and breadcrumb data', () => {
+test('scrubEvent keeps only the request method, drops extra and breadcrumb data', () => {
   const out = scrubEvent({
     exception: { values: [{ value: `bad url ${['postgres', '://u:', 'pw', '@h/db'].join('')}` }] },
     request: {
@@ -92,7 +92,7 @@ test('scrubEvent keeps only request method and path, drops extra and breadcrumb 
     extra: { argv: ['--token', 't'] },
   });
   assert.equal(out.exception.values[0].value, 'bad url postgres://u:***@h/db');
-  assert.deepEqual(out.request, { method: 'POST', url: 'https://api.example.test/api/ai/generate' });
+  assert.deepEqual(out.request, { method: 'POST' });
   assert.equal('data' in out.breadcrumbs[0], false);
   assert.ok(!out.breadcrumbs[0].message.includes('abc'));
   assert.equal('extra' in out, false);

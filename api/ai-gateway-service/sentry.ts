@@ -48,11 +48,9 @@ export function scrubEvent(event: SentryEvent): SentryEvent {
   if (logentry && Array.isArray(logentry.params)) logentry.params = logentry.params.map((p: unknown) => scrub(String(p)));
   const request = event.request;
   if (request && typeof request === 'object') {
-    // Keep only what identifies the route; drop headers, cookies, body and query string.
-    const kept: Record<string, unknown> = {};
-    if ('method' in request) kept.method = request.method;
-    if (typeof request.url === 'string') kept.url = request.url.split('?')[0];
-    event.request = kept;
+    // Keep only the method. URLs can carry personal data (slugs, ids, query strings); headers,
+    // cookies and bodies are dropped too.
+    event.request = 'method' in request ? { method: request.method } : {};
   }
   for (const crumb of event.breadcrumbs ?? []) {
     if (typeof crumb.message === 'string') crumb.message = scrub(crumb.message);
