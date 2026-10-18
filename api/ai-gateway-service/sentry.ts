@@ -57,6 +57,8 @@ export function scrubEvent(event: SentryEvent): SentryEvent {
     delete crumb.data;
   }
   delete event.extra;
+  // Incoming baggage (user ids, transaction names) lands here; errors don't need it.
+  if (event.contexts?.trace) delete event.contexts.trace.dynamic_sampling_context;
   return event;
 }
 
@@ -74,7 +76,8 @@ export async function initSentry(
     dsn,
     environment: env.SENTRY_ENVIRONMENT || 'production',
     release: env.RAILWAY_GIT_COMMIT_SHA || env.SENTRY_RELEASE || undefined,
-    tracesSampleRate: 0, // errors only: the free plan's quota is for errors
+    // No tracesSampleRate/tracesSampler at all: tracing stays fully off (with 0, an incoming
+    // sentry-trace header could still force a sampled transaction with URL, query and headers).
     sendDefaultPii: false,
     includeLocalVariables: false, // frame locals hold tokens and provider keys
     // Console output is neither an event nor a breadcrumb (free-form log text can carry secrets

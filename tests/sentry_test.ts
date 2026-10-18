@@ -47,7 +47,8 @@ test('SENTRY_DSN initialises errors only, without PII, locals or request bodies'
   assert.equal(enabled, true);
   const options = calls.init[0];
   assert.equal(options.environment, 'production');
-  assert.equal(options.tracesSampleRate, 0);
+  assert.equal('tracesSampleRate' in options, false);
+  assert.equal('tracesSampler' in options, false);
   assert.equal(options.sendDefaultPii, false);
   assert.equal(options.includeLocalVariables, false);
   const integrations = (options.integrations as (d: { name: string }[]) => unknown[])([
@@ -96,4 +97,9 @@ test('scrubEvent keeps only the request method, drops extra and breadcrumb data'
   assert.equal('data' in out.breadcrumbs[0], false);
   assert.ok(!out.breadcrumbs[0].message.includes('abc'));
   assert.equal('extra' in out, false);
+});
+
+test('scrubEvent drops the dynamic sampling context', () => {
+  const out = scrubEvent({ contexts: { trace: { trace_id: 't', dynamic_sampling_context: { user_id: 'alice' } } } });
+  assert.deepEqual(out.contexts.trace, { trace_id: 't' });
 });
