@@ -6,6 +6,7 @@
  * migration, and refuses to start on unsafe auth configuration.
  */
 
+import { captureError, flushSentry, initSentry } from './sentry.js';
 import { AI_GATEWAY_SERVICE_VERSION, createAiGatewayService } from './service.js';
 import { loadTelemetryMigration, openTelemetryStore, type TelemetryStore } from './store.js';
 
@@ -14,6 +15,7 @@ function logLine(fields: Record<string, string | number | boolean | null>): void
 }
 
 const env = process.env;
+await initSentry(env);
 const port = Number(env.PORT || '8080');
 const host = (env.AI_GATEWAY_BIND_HOST || '0.0.0.0').trim();
 const dbPath = (env.AI_GATEWAY_DB_PATH || '/data/ai-gateway.sqlite').trim();
@@ -54,6 +56,8 @@ try {
   process.on('SIGINT', () => shutdown('SIGINT'));
 } catch (error) {
   store?.close();
+  captureError(error);
+  await flushSentry();
   logLine({
     event: 'ai_gateway.startup_failed',
     // Messages name variables and paths only; configuration values are never included.

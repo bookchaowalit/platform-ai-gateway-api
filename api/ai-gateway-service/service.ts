@@ -20,6 +20,7 @@ import { AiBudgetError, createAiBudgetGuard, getAiBudgetStatus } from '../ai_bud
 import { aiRateLimitHeaders, createAiRateLimiter, type AiRateLimiter } from '../ai_rate_limit.js';
 import { createScopedTokenAuthenticator, type AuthResult } from '../auth.js';
 import { decideMediaRoute, MediaRouteError, parseMediaRouteInput } from '../media_router.js';
+import { captureError } from './sentry.js';
 import type { TelemetryStore } from './store.js';
 
 export const AI_GATEWAY_SERVICE_CONTRACT = 'solo-empire.ai-gateway-service.v1' as const;
@@ -389,6 +390,7 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
       if (res.getHeader('Connection') === 'close') req.destroy();
     });
     handle(req, res).catch((error: unknown) => {
+      captureError(error);
       log({
         ts: new Date().toISOString(),
         event: 'ai_gateway.unhandled_error',
