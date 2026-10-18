@@ -50,7 +50,14 @@ test('SENTRY_DSN initialises errors only, without PII, locals or request bodies'
   assert.equal(options.tracesSampleRate, 0);
   assert.equal(options.sendDefaultPii, false);
   assert.equal(options.includeLocalVariables, false);
-  assert.deepEqual(options.integrations, [{ name: 'Http', options: { maxRequestBodySize: 'none' } }]);
+  const integrations = (options.integrations as (d: { name: string }[]) => unknown[])([
+    { name: 'Console' },
+    { name: 'Http' },
+    { name: 'OnUncaughtException' },
+  ]);
+  assert.deepEqual(integrations, [{ name: 'OnUncaughtException' }, { name: 'Http', options: { maxRequestBodySize: 'none' } }]);
+  assert.equal(options.enableLogs, false);
+  assert.equal((options.beforeBreadcrumb as (c: unknown) => unknown)({ message: 'GET', category: 'console' }), null);
   assert.equal(typeof options.beforeSend, 'function');
   assert.deepEqual(calls.tags, { service: 'ai-gateway' });
   assert.deepEqual(lines, ['sentry: enabled for ai-gateway\n']);

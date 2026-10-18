@@ -79,13 +79,15 @@ export async function initSentry(
     tracesSampleRate: 0, // errors only: the free plan's quota is for errors
     sendDefaultPii: false,
     includeLocalVariables: false, // frame locals hold tokens and provider keys
-    integrations: [sdk.httpIntegration({ maxRequestBodySize: 'none' })],
+    // Console output is neither an event nor a breadcrumb (free-form log text can carry secrets
+    // no pattern recognises); request bodies are never read.
+    integrations: (defaults: { name: string }[]) => [
+      ...defaults.filter((integration) => integration.name !== 'Console' && integration.name !== 'Http'),
+      sdk.httpIntegration({ maxRequestBodySize: 'none' }),
+    ],
+    enableLogs: false,
     beforeSend: (event: SentryEvent) => scrubEvent(event),
-    beforeBreadcrumb: (crumb: SentryEvent) => {
-      delete crumb.data;
-      if (typeof crumb.message === 'string') crumb.message = scrub(crumb.message);
-      return crumb;
-    },
+    beforeBreadcrumb: () => null, // no breadcrumbs at all
   });
   const service = (env.RAILWAY_SERVICE_NAME || '').trim();
   if (service) sdk.setTag('service', service);
