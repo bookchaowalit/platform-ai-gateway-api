@@ -39,9 +39,14 @@ Railway variables hold every secret (`API_TOKENS_JSON`, upstream keys, `SENTRY_D
 none live in this repository. `SENTRY_DSN` turns on error reporting (unset = off; see
 `api/ai-gateway-service/sentry.ts`), with `SENTRY_ENVIRONMENT`.
 
+Deploys (CD, since 2026-10-18): the Railway service is connected to this repository's `main` with
+Railway's Wait for CI (`checkSuites`). A merge to `main` deploys only after the CI and security
+checks pass; a failing check leaves production on the previous deployment. Roll back by
+redeploying an earlier deployment in Railway. `railway up` is no longer used.
+
+After a merge, check the deployment and health:
+
 ```bash
-railway link --project solo-ai-gateway --service ai-gateway --environment production
-railway up --ci
 curl -fsS https://api.bookchaowalit.com/healthz
 ```
 
