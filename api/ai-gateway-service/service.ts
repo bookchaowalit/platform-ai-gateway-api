@@ -273,6 +273,7 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
         budgetGuard = createAiBudgetGuard(store.db, env);
       } catch (error) {
         if (error instanceof AiBudgetError) {
+          captureError(error);
           logRun({ subject, http_status: 503, code: 'budget_unavailable', request_ms: elapsed() });
           return sendError(res, 503, 'AI monthly budget guard is unavailable', 'budget_unavailable');
         }
@@ -293,10 +294,12 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
             store.record(withSubject(error.telemetry, subject));
           }
           const code = errorCode(error);
+          if (error.status >= 500) captureError(error); // provider or configuration failure, not a client error
           logRun({ subject, http_status: error.status, code, request_ms: elapsed() }, error.telemetry);
           return sendError(res, error.status, error.message, code);
         }
         if (error instanceof AiBudgetError) {
+          captureError(error);
           logRun({ subject, http_status: 503, code: 'budget_unavailable', request_ms: elapsed() });
           return sendError(res, 503, 'AI monthly budget guard is unavailable', 'budget_unavailable');
         }
