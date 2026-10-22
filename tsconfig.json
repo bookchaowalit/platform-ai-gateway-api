@@ -1,0 +1,18 @@
+{
+  // Type check only (`npm run typecheck`): tsx runs the tests and esbuild bundles the service.
+  "compilerOptions": {
+    "target": "es2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["es2023"],
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["api/**/*.ts", "mcp/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["**/node_modules", "**/dist"]
+}

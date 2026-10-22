@@ -21,7 +21,7 @@ the hosted service.
 api/                     gateway modules (routing, budget, rate limit, auth)
 api/ai-gateway-service/  HTTP service, telemetry store, entrypoint, build
 database/migrations/     telemetry schema
-tests/                   node:test suites (run with tsx)
+tests/                   node:test suites, *.test.ts (run with tsx)
 Dockerfile, railway.json build and deploy config (repository root is the context)
 ```
 
@@ -30,7 +30,8 @@ Dockerfile, railway.json build and deploy config (repository root is the context
 ```bash
 npm install
 npm test
-npm run build
+npm run build       # also installs api/ai-gateway-service deps (@sentry/node), needed by typecheck
+npm run typecheck   # tsc --noEmit, strict, over api/, mcp/ and tests/
 ```
 
 ## Deploy
@@ -66,4 +67,4 @@ unknown arguments are rejected before any HTTP call. Errors are a fixed message 
   platform JWT, so the platform automation tokens do not apply here.
 - Run: `npm install`, then `npm run mcp` or `node mcp/bin.mjs` (see `.mcp.json`; `bin: ai-gateway-mcp`). It runs through
   `tsx`; the hosted service build and Dockerfile do not use it.
-- Tests: `npm test` (`tests/ai_gateway_mcp_test.ts`; fake `fetch`, in-memory MCP client, no network).
+- Tests: `npm test` (`tests/ai_gateway_mcp.test.ts`; fake `fetch`, in-memory MCP client, no network).

@@ -9,12 +9,14 @@
   },
   "scripts": {
     "test": "tsx --test tests/*.ts",
+    "typecheck": "tsc --noEmit -p .",
     "build": "npm --prefix api/ai-gateway-service ci --no-audit --no-fund && npm --prefix api/ai-gateway-service run build",
     "mcp": "node mcp/bin.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.6.1",
-    "tsx": "^4.23.13"
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
