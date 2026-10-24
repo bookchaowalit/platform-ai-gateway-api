@@ -133,3 +133,10 @@ Big Loop Plan Wave 2 (solo-empire `repository-catalog/roadmaps/BIG-LOOP-PLAN-202
 |---|---|---|---|---|
 | Implemented (DoD) | Reviewer (checker) | Fresh Claude reviewer / 2026-10-22 | see Wave 2 report | CI run of the pushed tip |
 | Implemented (DoD) | Approver | Owner | pending | Wave 2 report |
+
+## Review (2026-10-24): changes requested
+
+Checker: independent Claude reviewer subagent (`solo:solo-reviewer`, Sonnet, read-only, no maker context). Status unchanged until fixed.
+
+- Tests run by the checker: npm test (76 passed) and npm run typecheck (clean), offline
+- Gap: All six ACs are tested, but the spec overclaims: §1 says the image installs uv.lock via uv sync --frozen and CI runs Ruff, mypy and a coverage gate (Node repo, no uv.lock, no coverage gate); §4 Interfaces table is garbage ('t|s|c'); Risk #1 copy-pasted from another spec; §6 cites a coverage gate that is not set.
