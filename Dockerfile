@@ -10,11 +10,11 @@ FROM node:22-slim AS build
 WORKDIR /build/api/ai-gateway-service
 COPY api/ai-gateway-service/package.json api/ai-gateway-service/package-lock.json ./
 RUN npm ci --no-audit --no-fund
-COPY api/ai_gateway.ts api/ai_budget.ts api/ai_rate_limit.ts api/auth.ts api/media_router.ts /build/api/
+COPY api/ai_gateway.ts api/ai_budget.ts api/ai_rate_limit.ts api/auth.ts api/media_router.ts api/workspace_auth.ts api/ai_shared_admission.ts /build/api/
 COPY platform/media-transcription-routing.json /build/platform/
 COPY api/ai-gateway-service/main.ts api/ai-gateway-service/service.ts api/ai-gateway-service/store.ts api/ai-gateway-service/sentry.ts ./
 COPY database/migrations/025_ai_run_telemetry.sql /build/database/migrations/
-RUN npm run build
+RUN NODE_PATH=/build/api/ai-gateway-service/node_modules npm run build
 
 FROM node:22-slim AS runtime
 ENV NODE_ENV=production \

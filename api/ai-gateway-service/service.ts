@@ -9,8 +9,9 @@
  *
  * It reuses the shared gateway modules (contract solo-empire.ai-gateway.v1,
  * Thai-first policy, budget guard, rate limiter) but none of the local
- * infra/api routes. Only scoped hashed tokens from API_TOKENS_JSON are
- * accepted; the legacy full-access API_TOKEN and ALLOW_UNAUTH_DEV are refused
+ * infra/api routes. Scoped hashed tokens are the default; an explicitly
+ * configured workspace-jwt profile supports staged shared admission. The
+ * legacy full-access API_TOKEN and ALLOW_UNAUTH_DEV are refused
  * at startup. CORS is intentionally not served: callers are server-side.
  */
 
@@ -22,6 +23,8 @@ import { createScopedTokenAuthenticator, type AuthResult } from '../auth.js';
 import { decideMediaRoute, MediaRouteError, parseMediaRouteInput } from '../media_router.js';
 import { captureError } from './sentry.js';
 import type { TelemetryStore } from './store.js';
+import { createWorkspaceJwtAuthenticator, type WorkspaceAuthResult } from '../workspace_auth.js';
+import { createSharedAdmission, SharedAdmissionError } from '../ai_shared_admission.js';
 
 export const AI_GATEWAY_SERVICE_CONTRACT = 'solo-empire.ai-gateway-service.v1' as const;
 export const AI_GATEWAY_SERVICE_VERSION = '0.1.0';
@@ -87,6 +90,19 @@ export function serviceConfigurationProblems(env: NodeJS.ProcessEnv): string[] {
   }
   if (truthy(env.ALLOW_UNAUTH_DEV)) {
     problems.push('ALLOW_UNAUTH_DEV must not be enabled for the hosted AI gateway');
+  }
+  const profile = env.AI_GATEWAY_AUTH_PROFILE || 'scoped';
+  if (!['scoped', 'workspace-jwt'].includes(profile)) problems.push('AI_GATEWAY_AUTH_PROFILE is invalid');
+  const mode = env.AI_GATEWAY_ADMISSION_MODE || 'legacy';
+  if (!['legacy', 'shared'].includes(mode)) problems.push('AI_GATEWAY_ADMISSION_MODE is invalid');
+  if (mode === 'shared') {
+    if (profile !== 'workspace-jwt') problems.push('shared admission requires AI_GATEWAY_AUTH_PROFILE=workspace-jwt');
+    try { createSharedAdmission(env); } catch { problems.push('Shared admission configuration is invalid'); }
+  }
+  if (profile === 'workspace-jwt') {
+    const jwt = createWorkspaceJwtAuthenticator(env);
+    if (jwt.configurationError) problems.push(jwt.configurationError);
+    return problems;
   }
   const auth = createScopedTokenAuthenticator(env.API_TOKENS_JSON);
   if (auth.configurationError) problems.push(`API_TOKENS_JSON is invalid: ${auth.configurationError}`);
@@ -192,7 +208,9 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
   if (problems.length) throw new Error(`AI gateway service configuration is invalid: ${problems.join('; ')}`);
 
   const { store } = options;
-  const auth = createScopedTokenAuthenticator(env.API_TOKENS_JSON);
+  const auth = env.AI_GATEWAY_AUTH_PROFILE === 'workspace-jwt'
+    ? createWorkspaceJwtAuthenticator(env) : createScopedTokenAuthenticator(env.API_TOKENS_JSON);
+  const shared = env.AI_GATEWAY_ADMISSION_MODE === 'shared' ? createSharedAdmission(env) : undefined;
   const rateLimiter = createAiRateLimiter(env);
   const maxBodyBytes = boundedInt(env.AI_GATEWAY_MAX_BODY_BYTES, DEFAULT_MAX_BODY_BYTES, 1_024, 4 * DEFAULT_MAX_BODY_BYTES);
   const requireBudget = !['0', 'false', 'no', 'off'].includes((env.AI_GATEWAY_REQUIRE_BUDGET || 'true').trim().toLowerCase());
@@ -222,20 +240,23 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
     });
   };
 
-  const withSubject = (event: AiTelemetryEvent, subject: string): AiTelemetryEvent => ({
+  const withSubject = (event: AiTelemetryEvent, subject: string, workspace?: string): AiTelemetryEvent => ({
     ...event,
-    metadata: { ...event.metadata, subject, service: AI_GATEWAY_SERVICE_CONTRACT },
+    metadata: { ...event.metadata, subject, ...(workspace ? { workspace_id: workspace } : {}), service: AI_GATEWAY_SERVICE_CONTRACT },
   });
 
   async function handleGenerate(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const started = performance.now();
     const elapsed = () => Number((performance.now() - started).toFixed(3));
-    const result = auth.authenticate(req, 'ai:generate');
-    if (!result.authorized || result.method !== 'scoped' || !result.subject) {
+    const result: WorkspaceAuthResult = await auth.authenticate(req, 'ai:generate');
+    if (!result.authorized || !['scoped', 'workspace-jwt'].includes(result.method) || !result.subject) {
       logRun({ subject: result.subject, http_status: result.status || 401, code: 'unauthorized', request_ms: elapsed() });
       return authFailure(res, result.authorized ? { ...result, authorized: false, status: 401 } : result);
     }
     const subject = result.subject;
+    if (result.workspace && (['x-workspace-id', 'x-workspace', 'x-workspace-authorization', 'x-tenant-id'].some(header => req.headers[header] !== undefined))) {
+      return sendError(res, 400, 'Workspace authority must come from the verified JWT', 'workspace_override_denied');
+    }
 
     let body: unknown;
     try {
@@ -246,7 +267,10 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
       return sendError(res, httpError.status, httpError.message, httpError.code, httpError.status === 413 || httpError.status === 415 ? { Connection: 'close' } : {});
     }
 
-    const permit = rateLimiter.acquire(subject);
+    if (result.workspace && body && typeof body === 'object' && ['ws', 'workspace', 'workspace_id', 'tenant_id'].some(field => Object.hasOwn(body, field))) {
+      return sendError(res, 400, 'Workspace authority must come from the verified JWT', 'workspace_override_denied');
+    }
+    const permit = rateLimiter.acquire(result.workspace ? `${result.workspace}:${subject}` : subject);
     if (!permit.allowed) {
       const status = permit.reason === 'configuration_error' ? 503 : 429;
       logRun({ subject, http_status: status, code: permit.reason, request_ms: elapsed() });
@@ -264,6 +288,12 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
     }
 
     try {
+      if (shared) {
+        try { await shared.acquireRate(result.authorization!); } catch (error) {
+          const admission = error instanceof SharedAdmissionError ? error : new SharedAdmissionError(503, 'shared_admission_unavailable');
+          return sendError(res, admission.status, admission.message, admission.code);
+        }
+      }
       if (requireBudget && getAiBudgetStatus(store.db, env).decision === 'unconfigured') {
         logRun({ subject, http_status: 503, code: 'budget_not_configured', request_ms: elapsed() });
         return sendError(res, 503, 'AI monthly budget is not configured', 'budget_not_configured');
@@ -282,16 +312,21 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
       try {
         const generated = await generateAi(body, env, {
           budgetGuard,
-          recordTelemetry: (event) => store.record(withSubject(event, subject)),
+          attemptAdmission: shared?.forCaller(result.authorization!),
+          recordTelemetry: (event) => store.record(withSubject(event, subject, result.workspace)),
         });
         logRun({ subject, http_status: 200, code: 'ok', request_ms: elapsed() }, generated.telemetry);
         return sendJson(res, 200, generated.response, aiRateLimitHeaders(permit));
       } catch (error) {
+        if (error instanceof SharedAdmissionError) {
+          logRun({ subject, http_status: error.status, code: error.code, request_ms: elapsed() });
+          return sendError(res, error.status, error.message, error.code);
+        }
         if (error instanceof AiGatewayError) {
           // Budget denials and configuration failures happen before the
           // provider call and are not persisted by generateAi itself.
           if (error.telemetry && (error.telemetry.estimated_cost_usd === 0 || error.telemetry.provider === null)) {
-            store.record(withSubject(error.telemetry, subject));
+            store.record(withSubject(error.telemetry, subject, result.workspace));
           }
           const code = errorCode(error);
           if (error.status >= 500) captureError(error); // provider or configuration failure, not a client error
@@ -325,10 +360,16 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
       return sendJson(res, ok ? 200 : 503, { status: ok ? 'ok' : 'unavailable' });
     }
 
+    if (path === '/readyz') {
+      if (method !== 'GET' && method !== 'HEAD') return sendError(res, 405, 'Method Not Allowed', 'method_not_allowed', { Allow: 'GET, HEAD' });
+      const ok = store.ping() && (!shared || await shared.ready());
+      return sendJson(res, ok ? 200 : 503, { status: ok ? 'ready' : 'unavailable', admission_mode: shared ? 'shared-staged' : 'legacy' });
+    }
+
     if (path === '/api/ai/status') {
       if (method !== 'GET') return sendError(res, 405, 'Method Not Allowed', 'method_not_allowed', { Allow: 'GET' });
-      const result = auth.authenticate(req, 'api:read');
-      if (!result.authorized || result.method !== 'scoped') return authFailure(res, result.authorized ? { ...result, authorized: false, status: 401 } : result);
+      const result: WorkspaceAuthResult = await auth.authenticate(req, 'api:read');
+      if (!result.authorized || !['scoped', 'workspace-jwt'].includes(result.method)) return authFailure(res, result.authorized ? { ...result, authorized: false, status: 401 } : result);
       return sendJson(res, 200, {
         ...getAiGatewayStatus(env),
         budget: getAiBudgetStatus(store.db, env),
@@ -338,6 +379,9 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
           version: AI_GATEWAY_SERVICE_VERSION,
           require_budget: requireBudget,
           max_body_bytes: maxBodyBytes,
+          auth_profile: env.AI_GATEWAY_AUTH_PROFILE || 'scoped',
+          admission_mode: shared ? 'shared-staged' : 'legacy',
+          shared_admission_ready: shared ? await shared.ready() : null,
           telemetry_store: store.ping() ? 'available' : 'unavailable',
         },
       });
@@ -357,8 +401,8 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
   }
 
   async function handleMediaRoute(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const result = auth.authenticate(req, 'ai:generate');
-    if (!result.authorized || result.method !== 'scoped' || !result.subject) {
+    const result: WorkspaceAuthResult = await auth.authenticate(req, 'ai:generate');
+    if (!result.authorized || !['scoped', 'workspace-jwt'].includes(result.method) || !result.subject) {
       return authFailure(res, result.authorized ? { ...result, authorized: false, status: 401 } : result);
     }
     let body: unknown;
