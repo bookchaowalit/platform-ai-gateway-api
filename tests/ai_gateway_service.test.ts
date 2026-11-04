@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
+import { SignJWT, createLocalJWKSet, exportJWK, type JWTVerifyGetKey } from 'jose';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -104,10 +105,10 @@ type Harness = {
   stop: () => Promise<void>;
 };
 
-async function startGateway(env: NodeJS.ProcessEnv, dbPath = ':memory:'): Promise<Harness> {
+async function startGateway(env: NodeJS.ProcessEnv, dbPath = ':memory:', identityKeys?: JWTVerifyGetKey): Promise<Harness> {
   const store = openTelemetryStore(dbPath, loadTelemetryMigration({}));
   const logs: ServiceLogLine[] = [];
-  const service = createAiGatewayService({ env, store, log: (line) => logs.push(line) });
+  const service = createAiGatewayService({ env, store, log: (line) => logs.push(line), identityKeys });
   const url = await listen(service.server);
   return {
     url,
@@ -569,5 +570,49 @@ test('media route endpoint returns a metadata-only decision and enforces scope',
     assert.equal(asAny(await invalid.json()).code, 'unsupported_media_type');
   } finally {
     await gateway.stop();
+  }
+});
+
+test('identity profile: platform-identity tokens for ai-api work next to the static tokens', async () => {
+  const issuer = 'https://identity.example.test';
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const keys = createLocalJWKSet({ keys: [{ ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256' }] });
+  const person = randomUUID();
+  const workspace = randomUUID();
+  const identityToken = async (scope: string) => {
+    const now = Math.floor(Date.now() / 1000);
+    return new SignJWT({ ws: workspace, scope, jti: randomUUID() }).setProtectedHeader({ alg: 'RS256', kid: 'k1' })
+      .setIssuer(issuer).setAudience('ai-api').setSubject(person).setIssuedAt(now).setExpirationTime(now + 900).sign(privateKey);
+  };
+  const env = gatewayEnv('http://127.0.0.1:9', { AI_GATEWAY_AUTH_PROFILE: 'identity', AI_GATEWAY_IDENTITY_ISSUER: issuer });
+  assert.deepEqual(serviceConfigurationProblems(env), []);
+  assert.ok(serviceConfigurationProblems({ ...env, AI_GATEWAY_IDENTITY_ISSUER: '' }).some((p) => /AI_GATEWAY_IDENTITY_ISSUER/.test(p)));
+  assert.ok(serviceConfigurationProblems({ ...env, AI_GATEWAY_ADMISSION_MODE: 'shared' }).some((p) => /workspace-jwt/.test(p)));
+
+  const upstream = await startUpstream((_body, res) => json(res, 200, okCompletion('gpt-6-luna')));
+  const gateway = await startGateway({ ...env, AI_GATEWAY_BASE_URL: `${upstream.url}/v1` }, ':memory:', keys);
+  try {
+    const status = await fetch(`${gateway.url}/api/ai/status`, { headers: { Authorization: `Bearer ${await identityToken('ai:read')}` } });
+    assert.equal(status.status, 200);
+    assert.equal((await status.json().then(asAny)).service.auth_profile, 'identity');
+
+    const readOnly = await post(gateway.url, await identityToken('ai:read'), baseRequest);
+    assert.equal(readOnly.status, 403);
+
+    const generated = await post(gateway.url, await identityToken('ai:generate'), baseRequest);
+    assert.equal(generated.status, 200);
+    assert.equal(upstream.calls.length, 1);
+    const row = telemetryRows(gateway.store).at(-1)!;
+    assert.equal(JSON.parse(row.metadata_json).subject, person);
+    assert.equal(JSON.parse(row.metadata_json).workspace_id, workspace);
+
+    const override = await post(gateway.url, await identityToken('ai:generate'), baseRequest, { 'X-Workspace-Id': randomUUID() });
+    assert.equal(override.status, 400);
+
+    const legacy = await fetch(`${gateway.url}/api/ai/status`, { headers: { Authorization: `Bearer ${READ_TOKEN}` } });
+    assert.equal(legacy.status, 200);
+  } finally {
+    await gateway.stop();
+    await close(upstream.server);
   }
 });

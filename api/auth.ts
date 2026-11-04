@@ -12,7 +12,7 @@ export type AuthResult = {
   authorized: boolean;
   subject: string | null;
   scopes: string[];
-  method: 'legacy' | 'scoped' | 'dev' | 'none' | 'workspace-jwt';
+  method: 'legacy' | 'scoped' | 'dev' | 'none' | 'workspace-jwt' | 'identity-jwt';
   requiredScope?: string;
   status?: 401 | 403;
   error?: string;

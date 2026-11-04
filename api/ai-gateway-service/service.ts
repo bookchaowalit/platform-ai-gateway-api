@@ -10,7 +10,9 @@
  * It reuses the shared gateway modules (contract solo-empire.ai-gateway.v1,
  * Thai-first policy, budget guard, rate limiter) but none of the local
  * infra/api routes. Scoped hashed tokens are the default; an explicitly
- * configured workspace-jwt profile supports staged shared admission. The
+ * configured workspace-jwt profile supports staged shared admission, and the
+ * identity profile accepts platform-identity tokens (audience ai-api, JWKS)
+ * next to the scoped hashed tokens. The
  * legacy full-access API_TOKEN and ALLOW_UNAUTH_DEV are refused
  * at startup. CORS is intentionally not served: callers are server-side.
  */
@@ -24,6 +26,8 @@ import { decideMediaRoute, MediaRouteError, parseMediaRouteInput } from '../medi
 import { captureError } from './sentry.js';
 import type { TelemetryStore } from './store.js';
 import { createWorkspaceJwtAuthenticator, type WorkspaceAuthResult } from '../workspace_auth.js';
+import { createIdentityAuthenticator } from '../identity_auth.js';
+import type { JWTVerifyGetKey } from 'jose';
 import { createSharedAdmission, SharedAdmissionError } from '../ai_shared_admission.js';
 
 export const AI_GATEWAY_SERVICE_CONTRACT = 'solo-empire.ai-gateway-service.v1' as const;
@@ -50,6 +54,8 @@ export interface AiGatewayServiceOptions {
   env: NodeJS.ProcessEnv;
   store: TelemetryStore;
   log?: (line: ServiceLogLine) => void;
+  /** Tests only: a local JWKS for the identity profile instead of the issuer's. */
+  identityKeys?: JWTVerifyGetKey;
 }
 
 export interface AiGatewayService {
@@ -92,12 +98,17 @@ export function serviceConfigurationProblems(env: NodeJS.ProcessEnv): string[] {
     problems.push('ALLOW_UNAUTH_DEV must not be enabled for the hosted AI gateway');
   }
   const profile = env.AI_GATEWAY_AUTH_PROFILE || 'scoped';
-  if (!['scoped', 'workspace-jwt'].includes(profile)) problems.push('AI_GATEWAY_AUTH_PROFILE is invalid');
+  if (!['scoped', 'workspace-jwt', 'identity'].includes(profile)) problems.push('AI_GATEWAY_AUTH_PROFILE is invalid');
   const mode = env.AI_GATEWAY_ADMISSION_MODE || 'legacy';
   if (!['legacy', 'shared'].includes(mode)) problems.push('AI_GATEWAY_ADMISSION_MODE is invalid');
   if (mode === 'shared') {
     if (profile !== 'workspace-jwt') problems.push('shared admission requires AI_GATEWAY_AUTH_PROFILE=workspace-jwt');
     try { createSharedAdmission(env); } catch { problems.push('Shared admission configuration is invalid'); }
+  }
+  if (profile === 'identity') {
+    const identity = createIdentityAuthenticator(env, { keys: async () => { throw new Error('unused'); } });
+    if (identity.configurationError) problems.push(identity.configurationError);
+    return problems; // static tokens are optional here: identity tokens alone are enough
   }
   if (profile === 'workspace-jwt') {
     const jwt = createWorkspaceJwtAuthenticator(env);
@@ -208,8 +219,9 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
   if (problems.length) throw new Error(`AI gateway service configuration is invalid: ${problems.join('; ')}`);
 
   const { store } = options;
-  const auth = env.AI_GATEWAY_AUTH_PROFILE === 'workspace-jwt'
-    ? createWorkspaceJwtAuthenticator(env) : createScopedTokenAuthenticator(env.API_TOKENS_JSON);
+  const auth = env.AI_GATEWAY_AUTH_PROFILE === 'workspace-jwt' ? createWorkspaceJwtAuthenticator(env)
+    : env.AI_GATEWAY_AUTH_PROFILE === 'identity' ? createIdentityAuthenticator(env, { keys: options.identityKeys })
+      : createScopedTokenAuthenticator(env.API_TOKENS_JSON);
   const shared = env.AI_GATEWAY_ADMISSION_MODE === 'shared' ? createSharedAdmission(env) : undefined;
   const rateLimiter = createAiRateLimiter(env);
   const maxBodyBytes = boundedInt(env.AI_GATEWAY_MAX_BODY_BYTES, DEFAULT_MAX_BODY_BYTES, 1_024, 4 * DEFAULT_MAX_BODY_BYTES);
@@ -249,7 +261,7 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
     const started = performance.now();
     const elapsed = () => Number((performance.now() - started).toFixed(3));
     const result: WorkspaceAuthResult = await auth.authenticate(req, 'ai:generate');
-    if (!result.authorized || !['scoped', 'workspace-jwt'].includes(result.method) || !result.subject) {
+    if (!result.authorized || !['scoped', 'workspace-jwt', 'identity-jwt'].includes(result.method) || !result.subject) {
       logRun({ subject: result.subject, http_status: result.status || 401, code: 'unauthorized', request_ms: elapsed() });
       return authFailure(res, result.authorized ? { ...result, authorized: false, status: 401 } : result);
     }
@@ -369,7 +381,7 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
     if (path === '/api/ai/status') {
       if (method !== 'GET') return sendError(res, 405, 'Method Not Allowed', 'method_not_allowed', { Allow: 'GET' });
       const result: WorkspaceAuthResult = await auth.authenticate(req, 'api:read');
-      if (!result.authorized || !['scoped', 'workspace-jwt'].includes(result.method)) return authFailure(res, result.authorized ? { ...result, authorized: false, status: 401 } : result);
+      if (!result.authorized || !['scoped', 'workspace-jwt', 'identity-jwt'].includes(result.method)) return authFailure(res, result.authorized ? { ...result, authorized: false, status: 401 } : result);
       return sendJson(res, 200, {
         ...getAiGatewayStatus(env),
         budget: getAiBudgetStatus(store.db, env),
@@ -402,7 +414,7 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
 
   async function handleMediaRoute(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const result: WorkspaceAuthResult = await auth.authenticate(req, 'ai:generate');
-    if (!result.authorized || !['scoped', 'workspace-jwt'].includes(result.method) || !result.subject) {
+    if (!result.authorized || !['scoped', 'workspace-jwt', 'identity-jwt'].includes(result.method) || !result.subject) {
       return authFailure(res, result.authorized ? { ...result, authorized: false, status: 401 } : result);
     }
     let body: unknown;
