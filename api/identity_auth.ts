@@ -48,7 +48,17 @@ export function createIdentityAuthenticator(env: NodeJS.ProcessEnv, options: { k
         });
         if (payload.aud !== IDENTITY_AUDIENCE || typeof payload.sub !== 'string' || !UUID.test(payload.sub)
           || typeof payload.ws !== 'string' || !UUID.test(payload.ws)
+          || typeof payload.jti !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(payload.jti)
           || (payload.scope !== undefined && (typeof payload.scope !== 'string' || payload.scope.length > 8192))) return denied(401);
+        // Same lifetime rules as workspace_auth.ts; identity issues 10-minute tokens.
+        const now = Math.floor(Date.now() / 1000);
+        for (const claim of ['iat', 'exp', ...(payload.nbf === undefined ? [] : ['nbf'])]) {
+          const value = payload[claim];
+          if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) return denied(401);
+        }
+        const iat = payload.iat!, exp = payload.exp!;
+        if (iat > now + 5 || exp <= iat || exp - iat > 3600
+          || (payload.nbf !== undefined && (payload.nbf < iat || payload.nbf >= exp))) return denied(401);
         const scopes = typeof payload.scope === 'string' ? payload.scope.split(' ').filter(Boolean) : [];
         const needed = ROUTE_SCOPE[requiredScope];
         if (!needed || !scopes.includes(needed)) return denied(403);
