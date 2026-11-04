@@ -88,3 +88,21 @@ test('the issuer must be an https URL', () => {
   assert.ok(createIdentityAuthenticator({ ...env, AI_GATEWAY_IDENTITY_ISSUER: '' }).configurationError);
   assert.equal(createIdentityAuthenticator(env, { keys }).configurationError, null);
 });
+
+test('a token living longer than an hour, issued in the future, or with a bad jti is 401', async () => {
+  const auth = createIdentityAuthenticator(env, { keys });
+  const now = Math.floor(Date.now() / 1000);
+  const signed = (iat: number, exp: number, jti: string, nbf?: number) => {
+    const jwt = new SignJWT({ ws, scope: 'ai:generate', jti, ...(nbf === undefined ? {} : { nbf }) })
+      .setProtectedHeader({ alg: 'RS256', kid: 'k1' }).setIssuer(ISSUER).setAudience('ai-api').setSubject(sub)
+      .setIssuedAt(iat).setExpirationTime(exp);
+    return jwt.sign(privateKey);
+  };
+  const bad = [
+    await signed(now, now + 7200, randomUUID()),
+    await signed(now + 600, now + 900, randomUUID()),
+    await signed(now, now + 900, 'bad jti with spaces'),
+    await signed(now, now + 900, randomUUID(), now + 900),
+  ];
+  for (const t of bad) assert.equal((await auth.authenticate(req(t), 'ai:generate')).status, 401);
+});
