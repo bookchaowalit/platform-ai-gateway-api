@@ -17,5 +17,10 @@
   "dependencies": {
     "@sentry/node": "11.4.0",
     "jose": "^6.1.3"
+  },
+  "overrides": {
+    "@sentry/bundler-plugins": {
+      "glob": "^14.0.3"
+    }
   }
 }
