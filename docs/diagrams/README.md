@@ -13,7 +13,7 @@ repo นี้คือ **Central AI Gateway ที่ให้บริกา�
 | 05 | C4 Context | done | [05-c4-context.md](05-c4-context.md) | README.md, service.ts, sentry.ts, uptime targets.ts, ops record |
 | 06 | C4 Container | done | [06-c4-container.md](06-c4-container.md) | Dockerfile, railway.json, main.ts, store.ts, mcp |
 | 07 | C4 Component | done | [07-c4-component.md](07-c4-component.md) | all `api/` modules |
-| 08 | ADRs (5) | done | [08-adr/](08-adr/) | README.md, service.ts, auth.ts, store.ts, entrypoint.sh, ci.yml, shared-admission.md, gh deployments |
+| 08 | ADRs (6; ADR-0006 added 2026-11-04 at `efe8fa9`) | done | [08-adr/](08-adr/) | README.md, service.ts, auth.ts, store.ts, entrypoint.sh, ci.yml, shared-admission.md, gh deployments |
 | 09 | ERD | done | [09-erd.md](09-erd.md) | 025_ai_run_telemetry.sql, store.ts, ai_gateway.ts |
 | 10 | Sequences (4) | done | [10-sequences.md](10-sequences.md) | service.ts, ai_gateway.ts, ai_budget.ts, ai_shared_admission.ts, main.ts, entrypoint.sh |
 | 11 | State machines | done | [11-state-machines.md](11-state-machines.md) | ai_gateway.ts, ai_budget.ts, ai_shared_admission.ts, media_router.ts |
@@ -36,6 +36,9 @@ repo นี้คือ **Central AI Gateway ที่ให้บริกา�
 - [ADR-0003](08-adr/ADR-0003-scoped-hashed-tokens-fail-closed.md) Scoped SHA-256 token hashes, fail closed
 - [ADR-0004](08-adr/ADR-0004-staged-workspace-jwt-and-shared-admission.md) Staged workspace JWT + shared admission (ปิดโดย default)
 - [ADR-0005](08-adr/ADR-0005-shared-ci-and-railway-wait-for-ci.md) Shared CI v1.1.1 + Railway Wait for CI
+- [ADR-0006](08-adr/ADR-0006-identity-profile-platform-identity-jwks.md) Identity profile: platform-identity tokens (aud `ai-api`, JWKS) คู่กับ static tokens
+
+Architecture summary: [`DOCPACK/02-architecture.md`](../../DOCPACK/02-architecture.md); 05 และ 06 อัปเดต 2026-11-04 ให้มี platform-identity
 
 ## Related docs (reused, not copied)
 

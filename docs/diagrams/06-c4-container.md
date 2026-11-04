@@ -7,6 +7,7 @@ C4Container
   System_Ext(llm, "OpenAI-compatible provider", "HTTPS")
   System_Ext(sentry, "Sentry", "Errors")
   System_Ext(data, "platform-data", "Staged admissions")
+  System_Ext(idn, "platform-identity", "JWKS for ai-api tokens")
   System_Boundary(rw, "Railway project platform-ai-gateway-api") {
     Container(svc, "ai-gateway service", "Node 22, node:http, esbuild bundle dist/server.mjs", "Routes, auth, rate limit, budget, provider calls")
     ContainerDb(db, "Telemetry store", "SQLite via node:sqlite on volume /data", "ai_run_telemetry, WAL, synchronous FULL")
@@ -20,9 +21,10 @@ C4Container
   Rel(svc, llm, "POST chat completions")
   Rel(svc, sentry, "captureError")
   Rel(svc, data, "reserve and settle when shared mode on")
+  Rel(svc, idn, "fetch JWKS, identity profile only")
 ```
 
-Sources: `Dockerfile`, `railway.json`, `api/ai-gateway-service/main.ts`, `api/ai-gateway-service/store.ts`, `api/ai-gateway-service/package.json`, `mcp/ai-gateway-mcp.ts`, `mcp/bin.mjs`, `.mcp.json`, `README.md`
+Sources: `Dockerfile`, `railway.json`, `api/ai-gateway-service/main.ts`, `api/ai-gateway-service/store.ts`, `api/ai-gateway-service/package.json`, `mcp/ai-gateway-mcp.ts`, `mcp/bin.mjs`, `.mcp.json`, `README.md`, `api/identity_auth.ts` (2026-11-04)
 
 ## Open questions
 
