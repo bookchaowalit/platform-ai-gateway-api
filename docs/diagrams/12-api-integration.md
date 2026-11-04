@@ -6,7 +6,7 @@
 |---|---|---|---|---|
 | GET, HEAD | `/healthz` | none | `{status: ok\|unavailable}` 200/503 | SQLite `SELECT 1` เท่านั้น; Railway healthcheck |
 | GET, HEAD | `/readyz` | none | `{status: ready\|unavailable, admission_mode}` | ถ้า shared mode: ตรวจ service JWT + platform-data `/readyz` |
-| GET | `/api/ai/status` | `api:read` (หรือ `api:write`, `*`) | contract, models, fallback_models, limits, `budget`, `rate_limit`, `service` | ไม่เรียก provider ไม่เปิด key |
+| GET | `/api/ai/status` | `api:read` (หรือ `api:write`; `*` ใช้ไม่ได้เพราะ `SCOPE_PATTERN` ใน `api/auth.ts` ปฏิเสธตอน parse) | contract, models, fallback_models, limits, `budget`, `rate_limit`, `service` | ไม่เรียก provider ไม่เปิด key |
 | POST | `/api/ai/generate` | `ai:generate` | content + usage; error `{contract, error, code}` | body ≤ 1 MiB (`AI_GATEWAY_MAX_BODY_BYTES` สูงสุด 4 MiB); headers `X-RateLimit-*`, `Retry-After` |
 | POST | `/api/media/route` | `ai:generate` | `solo-empire.media-route-decision.v1` | metadata only |
 | other | any | — | 404 `not_found` / 405 + `Allow` | |

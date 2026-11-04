@@ -48,7 +48,7 @@ flowchart LR
 | service → provider | **I** prompt/data leak | privacy_class private/restricted → 403; ไม่ persist prompt/output; error ไม่ส่ง provider body; Sentry `sendDefaultPii: false`, scrub URL/token/JWT | public/internal ยังส่งถึง third-party provider ตามออกแบบ |
 | `/api/ai/status` | **I** config leak | เปิดแค่ boolean `api_key_configured`, ชื่อ model ที่ผ่าน `safeName` | — |
 | service | **D** cost / DoS | rate limit ต่อ subject + concurrency global 8 (default), body ≤ 1 MiB, `headersTimeout` 15 s, provider timeout 30 s, monthly budget hard stop, fallback ≤ 1 ครั้ง | limiter อยู่ใน process; ไม่มี limit ก่อน auth สำหรับ anonymous (เช่น ต่อ IP) |
-| service | **E** privilege | refuse `API_TOKEN`/`ALLOW_UNAUTH_DEV` ตอน start; process รันเป็น `node` ผ่าน `setpriv` | scope `*` ใน token ผ่านทุก scope |
+| service | **E** privilege | refuse `API_TOKEN`/`ALLOW_UNAUTH_DEV` ตอน start; process รันเป็น `node` ผ่าน `setpriv` | — (`*` ตั้งค่าไม่ได้: `SCOPE_PATTERN` ปฏิเสธตอน parse) |
 | Volume `/data` | **T/I** | ไม่มี content ใน DB; `CHECK` constraints | ไม่มี backup (ดู 14) |
 | Railway variables | **I** | secret อยู่ใน Railway เท่านั้น (`AGENTS.md`), `gitleaks` ใน CI | — |
 | MCP | **S/E** | ไม่มี identity argument, strict input, token file ต้อง mode 600, URL https | — |
