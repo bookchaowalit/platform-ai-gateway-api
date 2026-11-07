@@ -114,9 +114,19 @@ export interface AiGatewayStatus {
     error_cost_policy: AiErrorCostPolicy | null;
     response_formats: AiResponseFormat[];
   };
+  capabilities: {
+    tools: true;
+    image_input: true;
+    json_schema: true;
+    /** Routes the calling subject may use with privacy_class private. */
+    private_routes: number;
+    private_routes_config: 'unset' | 'ok' | 'invalid';
+  };
   limits: {
     max_context_chars: number;
     max_output_tokens: number;
+    max_image_bytes: number;
+    max_total_image_bytes: number;
     default_token_budget: number;
     max_token_budget: number;
     timeout_ms: number;
@@ -375,8 +385,9 @@ function safeStatusValue<T>(read: () => T, fallback: T): T {
   try { return read(); } catch { return fallback; }
 }
 
-export function getAiGatewayStatus(env: NodeJS.ProcessEnv = process.env): AiGatewayStatus {
+export function getAiGatewayStatus(env: NodeJS.ProcessEnv = process.env, subject?: string): AiGatewayStatus {
   const defaultModel = safeName(env.AI_GATEWAY_MODEL, '');
+  const privateRoutes = readPrivateRoutes(env);
   const common = {
     contract: AI_GATEWAY_CONTRACT as typeof AI_GATEWAY_CONTRACT,
     response_language: AI_RESPONSE_LANGUAGE,
@@ -402,9 +413,18 @@ export function getAiGatewayStatus(env: NodeJS.ProcessEnv = process.env): AiGate
         response_formats: [...RESPONSE_FORMATS],
       };
     })(),
+    capabilities: {
+      tools: true as const,
+      image_input: true as const,
+      json_schema: true as const,
+      private_routes: subject ? privateRoutes.routes.get(subject)?.size ?? 0 : 0,
+      private_routes_config: privateRoutes.state,
+    },
     limits: {
       max_context_chars: boundedInt(env.AI_GATEWAY_MAX_CONTEXT_CHARS, 48_000, 1_024, 200_000),
       max_output_tokens: boundedInt(env.AI_GATEWAY_MAX_OUTPUT_TOKENS, 4_096, 128, 16_384),
+      max_image_bytes: imageLimits(env).maxImageBytes,
+      max_total_image_bytes: imageLimits(env).maxTotalImageBytes,
       default_token_budget: tokenBudgetLimits(env).defaultTokenBudget,
       max_token_budget: tokenBudgetLimits(env).maxTokenBudget,
       timeout_ms: boundedInt(env.AI_GATEWAY_TIMEOUT_MS, 30_000, 1_000, 120_000),

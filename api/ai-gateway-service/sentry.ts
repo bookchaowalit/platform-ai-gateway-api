@@ -29,13 +29,16 @@ const URL_USERINFO = /([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s:/@]+:)[^\s@]+(?=@)/g;
 const KV_SECRET = /\b(password|passwd|pwd|secret|token|api[_-]?key)(\s*[=:]\s*)\S+/gi;
 const BEARER = /\bbearer\s+[A-Za-z0-9._~+/=-]+/gi;
 const JWT = /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g;
+// SPEC-002: image payloads (customer documents) never leave in an error message.
+const DATA_IMAGE = /data:image\/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g;
 
 export function scrub(text: string): string {
   return text
     .replace(URL_USERINFO, (_match, head: string) => `${head}***`)
     .replace(KV_SECRET, '$1$2***')
     .replace(BEARER, 'Bearer ***')
-    .replace(JWT, '***jwt***');
+    .replace(JWT, '***jwt***')
+    .replace(DATA_IMAGE, 'data:image/***;base64,***');
 }
 
 export function scrubEvent(event: SentryEvent): SentryEvent {

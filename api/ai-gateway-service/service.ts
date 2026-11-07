@@ -312,7 +312,7 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
       }
       let budgetGuard;
       try {
-        budgetGuard = createAiBudgetGuard(store.db, env);
+        budgetGuard = createAiBudgetGuard(store.db, env, { subject, workspace: result.workspace });
       } catch (error) {
         if (error instanceof AiBudgetError) {
           captureError(error);
@@ -384,7 +384,7 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
       const result: WorkspaceAuthResult = await auth.authenticate(req, 'api:read');
       if (!result.authorized || !['scoped', 'workspace-jwt', 'identity-jwt'].includes(result.method)) return authFailure(res, result.authorized ? { ...result, authorized: false, status: 401 } : result);
       return sendJson(res, 200, {
-        ...getAiGatewayStatus(env),
+        ...getAiGatewayStatus(env, result.subject ?? undefined),
         budget: getAiBudgetStatus(store.db, env),
         rate_limit: rateLimiter.status(),
         service: {
