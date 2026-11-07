@@ -119,7 +119,7 @@ All tests are `node:test` under `tsx` with a fake `fetch`; no network.
 - **And** the global `LLM_LAB_MONTHLY_BUDGET_USD` guard still applies to everyone
 - **And** the subject ceiling is checked against that subject's own spent plus in-flight reserved amount (a per-subject reservation map, not the global `reservationState`); `createAiBudgetGuard` takes the subject
 - **And** the budget key is the token `subject`; workspace JWT callers use the same `workspace:subject` key as the rate limiter
-- **And** spend per subject is read from the existing `metadata.subject` that `withSubject` already writes, so no schema change is needed (an index on `json_extract(metadata_json,'$.subject')` only if the query is slow)
+- **And** spend per budget key is read from the existing `metadata.subject` plus `metadata.workspace_id` that `withSubject` already writes (both must match for a workspace key; `workspace_id` absent for a plain token key), so no schema change is needed (an index on `json_extract(metadata_json,'$.subject')` only if the query is slow)
 - **Test:** `tests/ai_budget.test.ts > "subject budget denies only that subject"`, `tests/ai_gateway_service.test.ts > "telemetry records subject"` · level: unit + integration (SQLite store)
 
 ### AC-09 — No content leaves through telemetry, logs or errors
@@ -180,7 +180,7 @@ All tests are `node:test` under `tsx` with a fake `fetch`; no network.
 | NFR | Target | How it is tested |
 |---|---|---|
 | Performance | Gateway overhead ≤ 50 ms for a 1 MB image request (validation + base64 check), excluding provider time | Informational timing in `tests/ai_gateway_vision.test.ts` (logged, fails only above 500 ms, so CI is not flaky) |
-| Latency budget | A request, including one fallback, finishes within `AI_GATEWAY_TIMEOUT_MS × 2`; consumers with a hard deadline (for example a chat reply token) set `AI_GATEWAY_TIMEOUT_MS` ≤ 15 s | AC-11 test asserts the second attempt uses the same timeout |
+| Latency budget | A request, including one fallback, finishes within 2 × the timeout that applies to it: `AI_GATEWAY_TIMEOUT_MS`, or `AI_GATEWAY_REASONING_TIMEOUT_MS` when the request sets `reasoning_effort`; consumers with a hard deadline (for example a chat reply token) keep the applicable timeout ≤ 15 s | AC-11 test asserts the second attempt uses the same timeout as the first, for both the plain and the reasoning case |
 | Security / privacy | No remote fetch; private data only on allow-listed routes with attestation; no content in telemetry, logs or Sentry; tool calls marked untrusted | AC-05, AC-07, AC-09, AC-10 |
 | Reliability / observability | Same timeouts and fallback as text; telemetry counts for images and tools; status reports config errors | AC-11, AC-12 |
 | Accessibility / UX | N/A: API only, no UI | — |
@@ -227,7 +227,7 @@ All tests are `node:test` under `tsx` with a fake `fetch`; no network.
 | Version | Date | Change | Scenarios affected | Approved by |
 |---|---|---|---|---|
 | 0.1 | 2026-11-07 | First draft | all | — |
-| 0.2 | 2026-11-07 | Review fixes: subject plumbing, no migration, private fallback, wire shapes, tool/schema/image cost in both checks, total image cap, latency budget, tool-call JSON exemption, leak wording | AC-02, 03, 05–11, 13 | — |
+| 0.2 | 2026-11-07 | Review fixes: subject plumbing, no migration, private fallback, wire shapes, tool/schema/image cost in both checks, total image cap, latency budget, tool-call JSON exemption, leak wording; spend key matches `workspace:subject`, latency budget covers the reasoning timeout | AC-02, 03, 05–11, 13 | — |
 
 ## Approval
 
