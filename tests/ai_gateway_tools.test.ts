@@ -175,13 +175,13 @@ test('AC-06 forwards json_schema and rejects non-JSON replies', async () => {
   } finally {
     provider.restore();
   }
-  provider = fakeProvider(() => providerText('ยอดรวม 8450 secret-model-text'));
+  provider = fakeProvider(() => providerText('ยอดรวม 8450 MARKER_MODEL_TEXT'));
   try {
     await assert.rejects(() => generateAi({ ...base, messages: [userTurn], response_format: format }, configuredEnv()), (error: unknown) => {
       assert.ok(error instanceof AiGatewayError);
       assert.equal(error.status, 502);
       assert.equal(error.telemetry?.metadata.error_class, 'invalid_response');
-      assert.doesNotMatch(error.message, /secret-model-text/);
+      assert.doesNotMatch(error.message, /MARKER_MODEL_TEXT/);
       return true;
     });
   } finally {

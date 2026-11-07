@@ -92,15 +92,15 @@ test('AC-05 image bytes do not count toward the text context limit', async () =>
 
 test('AC-09 telemetry holds counts only', async () => {
   const events: AiTelemetryEvent[] = [];
-  const provider = fakeProvider(() => providerToolCalls([{ id: 'c1', name: 'record_bill', arguments: '{"amount":"secret-arg-8450"}' }]));
+  const provider = fakeProvider(() => providerToolCalls([{ id: 'c1', name: 'record_bill', arguments: '{"amount":"MARKER_ARG_8450"}' }]));
   try {
     await generateAi(
       {
         ...base,
         messages: [
-          userWith(text('secret-user-text'), image(pngDataUrl())),
-          { role: 'assistant', content: null, tool_calls: [{ id: 'c0', type: 'function', function: { name: 'record_bill', arguments: '{"amount":"secret-old-arg"}' } }] },
-          { role: 'tool', tool_call_id: 'c0', content: 'secret-tool-output' },
+          userWith(text('MARKER_USER_TEXT'), image(pngDataUrl())),
+          { role: 'assistant', content: null, tool_calls: [{ id: 'c0', type: 'function', function: { name: 'record_bill', arguments: '{"amount":"MARKER_OLD_ARG"}' } }] },
+          { role: 'tool', tool_call_id: 'c0', content: 'MARKER_TOOL_OUTPUT' },
         ],
         tools: [RECORD_TOOL],
       },
@@ -112,8 +112,8 @@ test('AC-09 telemetry holds counts only', async () => {
   }
   assert.equal(events.length, 1);
   const serialized = JSON.stringify(events[0]);
-  for (const secret of ['secret-user-text', 'secret-arg-8450', 'secret-old-arg', 'secret-tool-output', 'base64', 'record_bill', 'amount']) {
-    assert.ok(!serialized.includes(secret), `telemetry leaked ${secret}`);
+  for (const marker of ['MARKER_USER_TEXT', 'MARKER_ARG_8450', 'MARKER_OLD_ARG', 'MARKER_TOOL_OUTPUT', 'base64', 'record_bill', 'amount']) {
+    assert.ok(!serialized.includes(marker), `telemetry leaked ${marker}`);
   }
   assert.equal(events[0].metadata.image_count, 1);
   assert.equal(events[0].metadata.tool_count, 1);
