@@ -167,3 +167,16 @@ test('AC-13 tool and schema bytes count toward the estimate', async () => {
     /token_budget/,
   );
 });
+
+test('NFR gateway overhead for a 1 MB image stays bounded (informational)', async () => {
+  const provider = fakeProvider(() => providerText('ok'));
+  try {
+    const started = performance.now();
+    await generateAi({ ...base, messages: [userWith(text('x'), image(jpegDataUrl(1_000_000)))] }, configuredEnv());
+    const ms = performance.now() - started;
+    process.stdout.write(`# gateway overhead for a 1 MB image: ${ms.toFixed(1)} ms\n`);
+    assert.ok(ms < 500, `overhead ${ms} ms`);
+  } finally {
+    provider.restore();
+  }
+});

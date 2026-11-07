@@ -260,3 +260,25 @@ test('AC-11 falls back with tools and images', async () => {
     provider.restore();
   }
 });
+
+test('AC-11 the fallback attempt uses the same timeout as the primary, plain and reasoning', async () => {
+  const original = globalThis.fetch;
+  const durations: number[] = [];
+  globalThis.fetch = ((_url: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    const started = performance.now();
+    init?.signal?.addEventListener('abort', () => {
+      durations.push(performance.now() - started);
+      reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    });
+  })) as typeof fetch;
+  try {
+    const plain = configuredEnv({ AI_GATEWAY_FALLBACK_MODEL: 'fallback-model', AI_GATEWAY_TIMEOUT_MS: '1000', AI_GATEWAY_REASONING_TIMEOUT_MS: '3000' });
+    await assert.rejects(() => generateAi({ ...base, messages: [userTurn], tools: [RECORD_TOOL] }, plain), (error: unknown) => error instanceof AiGatewayError && error.status === 504);
+    const reasoning = configuredEnv({ AI_GATEWAY_FALLBACK_MODEL: 'fallback-model', AI_GATEWAY_TIMEOUT_MS: '3000', AI_GATEWAY_REASONING_TIMEOUT_MS: '1000' });
+    await assert.rejects(() => generateAi({ ...base, reasoning_effort: 'low', messages: [userTurn], tools: [RECORD_TOOL] }, reasoning), (error: unknown) => error instanceof AiGatewayError && error.status === 504);
+  } finally {
+    globalThis.fetch = original;
+  }
+  assert.equal(durations.length, 4);
+  for (const ms of durations) assert.ok(ms >= 900 && ms < 2500, `attempt took ${ms} ms`);
+});
