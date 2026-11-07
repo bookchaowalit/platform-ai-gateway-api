@@ -219,7 +219,7 @@ added when the branch is pushed.
 
 | # | Risk or question | Impact | Owner | Resolution / date |
 |---|---|---|---|---|
-| 1 | Is client personal data (names, amounts, bill and slip photos) allowed through this gateway at all? The gateway stores no content, but it is one more processor in the path | Blocks AC-07 and the first consumer | Owner | Allowed by the owner 2026-11-07 (approval reply); still gated per route by AC-07 |
+| 1 | Is client personal data (names, amounts, document photos) allowed through this gateway at all? The gateway stores no content, but it is one more processor in the path | Blocks AC-07 and the first consumer | Owner | Allowed by the owner 2026-11-07 (approval reply); still gated per route by AC-07 |
 | 2 | Provider data retention: setting `AI_GATEWAY_PROVIDER_PRIVATE_DATA_ATTESTED=true` means the owner has checked the provider account's retention and training settings | Personal-data law exposure | Owner | open |
 | 3 | Whose provider key and money pays for a client's calls once they go through the gateway | Billing and budget numbers in `AI_GATEWAY_SUBJECT_BUDGETS_JSON` | Owner | open |
 | 4 | The gateway is one Railway replica with SQLite telemetry: if it is down, every client bot on it loses AI | Client outage while the gateway is down | Owner | Consumers keep a direct-provider rollback switch; shared admission (`docs/shared-admission.md`) is the route to more replicas |
