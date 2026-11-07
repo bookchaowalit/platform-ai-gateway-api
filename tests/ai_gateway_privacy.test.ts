@@ -23,7 +23,7 @@ const allowEnv = (overrides: NodeJS.ProcessEnv = {}) => configuredEnv({
 async function denied(input: unknown, env: NodeJS.ProcessEnv, subject?: string) {
   const provider = fakeProvider(() => providerText('unused'));
   try {
-    await assert.rejects(() => generateAi(input, env, { subject }), (error: unknown) => {
+    await assert.rejects(() => generateAi(input, env, { privateRouteSubject }), (error: unknown) => {
       assert.ok(error instanceof AiGatewayError);
       assert.equal(error.status, 403);
       return true;
@@ -37,7 +37,7 @@ async function denied(input: unknown, env: NodeJS.ProcessEnv, subject?: string) 
 test('AC-07 private allowed only for allow-listed subject routes', async () => {
   const provider = fakeProvider(() => providerText('ค้าง 8,450 บาท'));
   try {
-    const { response, telemetry } = await generateAi(request, allowEnv(), { subject: 'client-a' });
+    const { response, telemetry } = await generateAi(request, allowEnv(), { privateRouteSubject: 'client-a' });
     assert.equal(response.content, 'ค้าง 8,450 บาท');
     assert.equal(telemetry.metadata.privacy_class, 'private');
   } finally {
@@ -65,7 +65,7 @@ test('AC-07 the subject comes from the caller token, not the request body', asyn
 test('AC-07 internal requests are unaffected by the allow-list', async () => {
   const provider = fakeProvider(() => providerText('ok'));
   try {
-    await generateAi({ ...request, privacy_class: 'internal' }, allowEnv({ AI_GATEWAY_PRIVATE_ROUTES_JSON: '{bad' }), { subject: 'client-b' });
+    await generateAi({ ...request, privacy_class: 'internal' }, allowEnv({ AI_GATEWAY_PRIVATE_ROUTES_JSON: '{bad' }), { privateRouteSubject: 'client-b' });
     assert.equal(provider.bodies.length, 1);
   } finally {
     provider.restore();
@@ -76,14 +76,14 @@ test('AC-07 private request skips an unattested fallback', async () => {
   const env = allowEnv({ AI_GATEWAY_FALLBACK_MODEL: 'fallback-model' });
   let provider = fakeProvider(() => new Response('{}', { status: 503 }));
   try {
-    await assert.rejects(() => generateAi(request, env, { subject: 'client-a' }), (error: unknown) => error instanceof AiGatewayError && error.status === 502);
+    await assert.rejects(() => generateAi(request, env, { privateRouteSubject: 'client-a' }), (error: unknown) => error instanceof AiGatewayError && error.status === 502);
     assert.equal(provider.bodies.length, 1, 'no fallback call for private data');
   } finally {
     provider.restore();
   }
   provider = fakeProvider((_body, call) => (call === 0 ? new Response('{}', { status: 503 }) : providerText('ok')));
   try {
-    const { response } = await generateAi(request, { ...env, AI_GATEWAY_FALLBACK_PRIVATE_DATA_ATTESTED: 'true' }, { subject: 'client-a' });
+    const { response } = await generateAi(request, { ...env, AI_GATEWAY_FALLBACK_PRIVATE_DATA_ATTESTED: 'true' }, { privateRouteSubject: 'client-a' });
     assert.equal(provider.bodies.length, 2);
     assert.equal(response.fallback_used, true);
   } finally {

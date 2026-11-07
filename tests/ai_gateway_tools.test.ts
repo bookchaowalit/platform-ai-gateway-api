@@ -282,3 +282,14 @@ test('AC-11 the fallback attempt uses the same timeout as the primary, plain and
   assert.equal(durations.length, 4);
   for (const ms of durations) assert.ok(ms >= 900 && ms < 2500, `attempt took ${ms} ms`);
 });
+
+test('AC-03 an assistant tool-call message may omit content; it is forwarded as null', async () => {
+  const provider = fakeProvider(() => providerText('ok'));
+  try {
+    const { content: _omit, ...withoutContent } = assistantCall;
+    await generateAi({ ...base, messages: [userTurn, withoutContent, toolReply], tools: [RECORD_TOOL] }, configuredEnv());
+    assert.equal(provider.bodies[0].messages[2].content, null);
+  } finally {
+    provider.restore();
+  }
+});

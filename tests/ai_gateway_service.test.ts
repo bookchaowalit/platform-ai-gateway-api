@@ -692,3 +692,42 @@ test('SPEC-002 AC-12 status advertises capabilities', async () => {
     await bad.stop();
   }
 });
+
+test('SPEC-002 AC-07 private routes apply to scoped tokens only, never to a JWT with the same sub', async () => {
+  const issuer = 'https://identity.example.test';
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const keys = createLocalJWKSet({ keys: [{ ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256' }] });
+  const identityToken = async (sub: string) => {
+    const now = Math.floor(Date.now() / 1000);
+    return new SignJWT({ ws: randomUUID(), scope: 'ai:generate ai:read', jti: randomUUID() }).setProtectedHeader({ alg: 'RS256', kid: 'k1' })
+      .setIssuer(issuer).setAudience('ai-api').setSubject(sub).setIssuedAt(now).setExpirationTime(now + 900).sign(privateKey);
+  };
+  const upstream = await startUpstream((body, res) => json(res, 200, okCompletion(body.model)));
+  const env = gatewayEnv(upstream.url, {
+    AI_GATEWAY_AUTH_PROFILE: 'identity',
+    AI_GATEWAY_IDENTITY_ISSUER: issuer,
+    AI_GATEWAY_PRIVATE_ROUTES_JSON: JSON.stringify({ 'ev3-full': ['ev3-chat'] }),
+    AI_GATEWAY_PROVIDER_PRIVATE_DATA_ATTESTED: 'true',
+  });
+  const gateway = await startGateway(env, ':memory:', keys);
+  try {
+    const privateRequest = { ...baseRequest, privacy_class: 'private' };
+    assert.equal((await post(gateway.url, BOTH_TOKEN, privateRequest)).status, 200);
+    const jwt = await identityToken('ev3-full');
+    assert.equal((await post(gateway.url, jwt, privateRequest)).status, 403);
+    const status = await (await fetch(`${gateway.url}/api/ai/status`, { headers: { Authorization: `Bearer ${jwt}` } })).json().then(asAny);
+    assert.equal(status.capabilities.private_routes, 0);
+    assert.equal(upstream.calls.length, 1);
+  } finally {
+    await gateway.stop();
+    await close(upstream.server);
+  }
+});
+
+test('SPEC-002 AC-08 subject budgets require the bounded error cost policy and valid config at startup', () => {
+  const env = gatewayEnv('http://127.0.0.1:9', { AI_GATEWAY_SUBJECT_BUDGETS_JSON: JSON.stringify({ 'ev3-web': 1 }) });
+  assert.ok(serviceConfigurationProblems(env).some((p) => /AI_GATEWAY_ERROR_COST_POLICY=bounded/.test(p)));
+  assert.deepEqual(serviceConfigurationProblems({ ...env, AI_GATEWAY_ERROR_COST_POLICY: 'bounded' }), []);
+  assert.ok(serviceConfigurationProblems({ ...env, AI_GATEWAY_ERROR_COST_POLICY: 'bounded', AI_GATEWAY_SUBJECT_BUDGETS_JSON: '{bad' })
+    .some((p) => /AI_GATEWAY_SUBJECT_BUDGETS_JSON/.test(p)));
+});
