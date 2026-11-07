@@ -136,8 +136,12 @@ export interface AiGatewayStatus {
 }
 
 export interface AiGenerateOptions {
-  /** Authenticated caller subject from the service; never read from the request body. */
-  subject?: string;
+  /**
+   * Subject for the private-route allow-list: set by the service only for a scoped static token
+   * (no workspace), so a JWT whose `sub` repeats an allow-listed name never inherits its routes.
+   * Never read from the request body.
+   */
+  privateRouteSubject?: string;
   budgetGuard?: AiBudgetGuard;
   attemptAdmission?: AiAttemptAdmission;
   recordTelemetry?: (event: AiTelemetryEvent) => void;
@@ -790,7 +794,7 @@ export async function generateAi(input: unknown, env: NodeJS.ProcessEnv = proces
     throw new AiGatewayError(503, message, telemetryForError(runId, { route: 'unknown', prompt_version: 'unknown', tokenBudget: 0 }, null, null, performance.now() - started, 'error', 'not_configured'));
   }
   const privateRoutes = readPrivateRoutes(env);
-  const request = validateRequest(input, config, (route) => privateAllowed(privateRoutes, options.subject, route));
+  const request = validateRequest(input, config, (route) => privateAllowed(privateRoutes, options.privateRouteSubject, route));
   const primaryModel = config.models[request.profile];
   // Private data goes to a fallback model only when the owner attested that provider too.
   const fallbackModel = request.privacyClass === 'private' && !privateRoutes.fallbackAttested

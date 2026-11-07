@@ -238,10 +238,12 @@ export function parseMessages(raw: unknown, tools: ParsedTools, maxChars: number
     }
     if (role === 'assistant' && item.tool_calls !== undefined) {
       const calls = assistantToolCalls(item.tool_calls, label, tools, seenIds);
-      if (content !== null && (typeof content !== 'string' || content.length > maxChars)) fail(`${label}.content must be null or a string`);
+      // OpenAI allows content to be omitted beside tool_calls; forward it as null.
+      const text = content === undefined ? null : content;
+      if (text !== null && (typeof text !== 'string' || text.length > maxChars)) fail(`${label}.content must be null or a string`);
       pending = new Set(calls.map((call) => call.id as string));
       toolHistoryBytes += jsonBytes(calls);
-      return { role, content, tool_calls: calls };
+      return { role, content: text, tool_calls: calls };
     }
     if (role === 'user') return { role, content: userContent(content, label, maxChars, limits, state) };
     if (role !== 'system' && role !== 'assistant') fail(`${label}.role is invalid`);

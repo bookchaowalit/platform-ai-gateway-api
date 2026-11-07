@@ -330,6 +330,11 @@ function subjectBudgets(env: NodeJS.ProcessEnv): Map<string, number> | null {
   return budgets;
 }
 
+/** Startup check: null when AI_GATEWAY_SUBJECT_BUDGETS_JSON is unset or valid, else a fixed message. */
+export function subjectBudgetConfigError(env: NodeJS.ProcessEnv): string | null {
+  try { subjectBudgets(env); return null; } catch { return 'AI_GATEWAY_SUBJECT_BUDGETS_JSON is invalid'; }
+}
+
 function querySubjectSpend(db: SqliteDatabase, caller: AiBudgetCaller, bounds = periodBounds()): { spent: number; unknown: number } {
   try {
     const row = db.prepare(

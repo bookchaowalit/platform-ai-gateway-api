@@ -23,7 +23,7 @@ const allowEnv = (overrides: NodeJS.ProcessEnv = {}) => configuredEnv({
 async function denied(input: unknown, env: NodeJS.ProcessEnv, subject?: string) {
   const provider = fakeProvider(() => providerText('unused'));
   try {
-    await assert.rejects(() => generateAi(input, env, { privateRouteSubject }), (error: unknown) => {
+    await assert.rejects(() => generateAi(input, env, { privateRouteSubject: subject }), (error: unknown) => {
       assert.ok(error instanceof AiGatewayError);
       assert.equal(error.status, 403);
       return true;

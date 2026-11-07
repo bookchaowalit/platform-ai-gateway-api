@@ -697,25 +697,26 @@ test('SPEC-002 AC-07 private routes apply to scoped tokens only, never to a JWT 
   const issuer = 'https://identity.example.test';
   const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const keys = createLocalJWKSet({ keys: [{ ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256' }] });
-  const identityToken = async (sub: string) => {
+  const identityToken = async (sub: string, scope: string) => {
     const now = Math.floor(Date.now() / 1000);
-    return new SignJWT({ ws: randomUUID(), scope: 'ai:generate ai:read', jti: randomUUID() }).setProtectedHeader({ alg: 'RS256', kid: 'k1' })
+    return new SignJWT({ ws: randomUUID(), scope, jti: randomUUID() }).setProtectedHeader({ alg: 'RS256', kid: 'k1' })
       .setIssuer(issuer).setAudience('ai-api').setSubject(sub).setIssuedAt(now).setExpirationTime(now + 900).sign(privateKey);
   };
+  const person = randomUUID();
   const upstream = await startUpstream((body, res) => json(res, 200, okCompletion(body.model)));
   const env = gatewayEnv(upstream.url, {
     AI_GATEWAY_AUTH_PROFILE: 'identity',
     AI_GATEWAY_IDENTITY_ISSUER: issuer,
-    AI_GATEWAY_PRIVATE_ROUTES_JSON: JSON.stringify({ 'ev3-full': ['ev3-chat'] }),
+    // A JWT whose sub equals an allow-listed key must still be refused.
+    AI_GATEWAY_PRIVATE_ROUTES_JSON: JSON.stringify({ 'ev3-full': ['ev3-chat'], [person]: ['ev3-chat'] }),
     AI_GATEWAY_PROVIDER_PRIVATE_DATA_ATTESTED: 'true',
   });
   const gateway = await startGateway(env, ':memory:', keys);
   try {
     const privateRequest = { ...baseRequest, privacy_class: 'private' };
     assert.equal((await post(gateway.url, BOTH_TOKEN, privateRequest)).status, 200);
-    const jwt = await identityToken('ev3-full');
-    assert.equal((await post(gateway.url, jwt, privateRequest)).status, 403);
-    const status = await (await fetch(`${gateway.url}/api/ai/status`, { headers: { Authorization: `Bearer ${jwt}` } })).json().then(asAny);
+    assert.equal((await post(gateway.url, await identityToken(person, 'ai:generate'), privateRequest)).status, 403);
+    const status = await (await fetch(`${gateway.url}/api/ai/status`, { headers: { Authorization: `Bearer ${await identityToken(person, 'ai:read')}` } })).json().then(asAny);
     assert.equal(status.capabilities.private_routes, 0);
     assert.equal(upstream.calls.length, 1);
   } finally {

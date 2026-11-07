@@ -19,7 +19,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { AI_GATEWAY_CONTRACT, AiGatewayError, generateAi, getAiGatewayStatus, type AiTelemetryEvent } from '../ai_gateway.js';
-import { AiBudgetError, createAiBudgetGuard, getAiBudgetStatus } from '../ai_budget.js';
+import { AiBudgetError, createAiBudgetGuard, getAiBudgetStatus, subjectBudgetConfigError } from '../ai_budget.js';
 import { aiRateLimitHeaders, createAiRateLimiter, type AiRateLimiter } from '../ai_rate_limit.js';
 import { createScopedTokenAuthenticator, type AuthResult } from '../auth.js';
 import { decideMediaRoute, MediaRouteError, parseMediaRouteInput } from '../media_router.js';
@@ -89,8 +89,22 @@ export function serviceEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 
 /** Returns configuration problems by variable name only; never values. */
+/** Private routes are keyed by scoped static-token subjects only (SPEC-002 AC-07). */
+function privateRouteSubject(result: WorkspaceAuthResult): string | undefined {
+  return result.method === 'scoped' && !result.workspace && result.subject ? result.subject : undefined;
+}
+
 export function serviceConfigurationProblems(env: NodeJS.ProcessEnv): string[] {
   const problems: string[] = [];
+  if ((env.AI_GATEWAY_SUBJECT_BUDGETS_JSON || '').trim()) {
+    // Under the default "unknown" policy one provider error row has a NULL cost, which would lock
+    // that subject out for the rest of the month (SPEC-002 AC-08).
+    if ((env.AI_GATEWAY_ERROR_COST_POLICY || 'unknown').trim() !== 'bounded') {
+      problems.push('AI_GATEWAY_SUBJECT_BUDGETS_JSON requires AI_GATEWAY_ERROR_COST_POLICY=bounded');
+    }
+    const budgetError = subjectBudgetConfigError(env);
+    if (budgetError) problems.push(budgetError);
+  }
   if ((env.API_TOKEN || '').trim()) {
     problems.push('API_TOKEN (legacy full-access token) must not be set for the hosted AI gateway');
   }
@@ -323,7 +337,7 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
       }
       try {
         const generated = await generateAi(body, env, {
-          subject,
+          privateRouteSubject: privateRouteSubject(result),
           budgetGuard,
           attemptAdmission: shared?.forCaller(result.authorization!),
           recordTelemetry: (event) => store.record(withSubject(event, subject, result.workspace)),
@@ -384,7 +398,7 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
       const result: WorkspaceAuthResult = await auth.authenticate(req, 'api:read');
       if (!result.authorized || !['scoped', 'workspace-jwt', 'identity-jwt'].includes(result.method)) return authFailure(res, result.authorized ? { ...result, authorized: false, status: 401 } : result);
       return sendJson(res, 200, {
-        ...getAiGatewayStatus(env, result.subject ?? undefined),
+        ...getAiGatewayStatus(env, privateRouteSubject(result)),
         budget: getAiBudgetStatus(store.db, env),
         rate_limit: rateLimiter.status(),
         service: {

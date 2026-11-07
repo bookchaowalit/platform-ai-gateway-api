@@ -107,7 +107,7 @@ All tests are `node:test` under `tsx` with a fake `fetch`; no network.
 - **Then** it is accepted only when the caller's token subject lists that route and the attestation flag is set; otherwise 403 as today
 - **And** `restricted` is always 403
 - **And** a private request never goes to the fallback model unless `AI_GATEWAY_FALLBACK_PRIVATE_DATA_ATTESTED=true`; without it, a retryable primary failure is returned as is
-- **And** the subject reaches `generateAi` as `options.subject` from `service.ts` (it is not read from the request body)
+- **And** the subject reaches `generateAi` as `options.privateRouteSubject`, set by `service.ts` only for a scoped static token with no workspace; a workspace or identity JWT whose `sub` equals an allow-listed key is refused (it is never read from the request body)
 - **And** an invalid `AI_GATEWAY_PRIVATE_ROUTES_JSON` makes the gateway refuse every private request (fail closed) and `/api/ai/status` reports the reason
 - **Test:** `tests/ai_gateway_privacy.test.ts > "private allowed only for allow-listed subject routes"`, `"private request skips an unattested fallback"` · level: unit
 
@@ -119,6 +119,7 @@ All tests are `node:test` under `tsx` with a fake `fetch`; no network.
 - **And** the global `LLM_LAB_MONTHLY_BUDGET_USD` guard still applies to everyone
 - **And** the subject ceiling is checked against that subject's own spent plus in-flight reserved amount (a per-subject reservation map, not the global `reservationState`); `createAiBudgetGuard` takes the subject
 - **And** the budget key is the token `subject`; workspace JWT callers use the same `workspace:subject` key as the rate limiter
+- **And** startup refuses `AI_GATEWAY_SUBJECT_BUDGETS_JSON` unless `AI_GATEWAY_ERROR_COST_POLICY=bounded`, so an unknown-cost error row cannot lock a subject out for the month; malformed JSON is a startup problem too
 - **And** spend per budget key is read from the existing `metadata.subject` plus `metadata.workspace_id` that `withSubject` already writes (both must match for a workspace key; `workspace_id` absent for a plain token key), so no schema change is needed (an index on `json_extract(metadata_json,'$.subject')` only if the query is slow)
 - **Test:** `tests/ai_budget.test.ts > "subject budget denies only that subject"`, `tests/ai_gateway_service.test.ts > "telemetry records subject"` · level: unit + integration (SQLite store)
 
@@ -126,7 +127,7 @@ All tests are `node:test` under `tsx` with a fake `fetch`; no network.
 
 - **Given** requests with images, tool arguments and tool results
 - **Then** telemetry, Sentry events and error messages contain no image bytes, tool arguments, tool outputs or schema text; they hold only counts (`image_count`, `tool_count`, `tool_call_count`) and `has_tools`, `has_images`
-- **And** the Sentry scrubber replaces any `data:image/...;base64,` string and drops request `messages`, `tools` and `tool_calls` fields
+- **And** the Sentry scrubber replaces any `data:image/...;base64,` string; request bodies and `extra` are already dropped, and no gateway error message carries tool arguments or outputs (validation messages are fixed text), which the telemetry and Sentry tests check by absence
 - **Test:** `tests/ai_gateway_vision.test.ts > "telemetry holds counts only"`, `tests/sentry.test.ts > "scrubs image and tool payloads"` · level: unit
 
 ### AC-10 — Provider tool calls are bounded
@@ -195,18 +196,21 @@ All tests are `node:test` under `tsx` with a fake `fetch`; no network.
 ### Red / green log
 
 Red runs are local (`npx tsx --test <file>`), committed before the implementation on this branch. Green is the local
-full suite (`npm test`: 134 pass, 1 skipped as before) plus `npm run typecheck` and `npm run build`; the CI run URL is
+full suite (`npm test`: 138 pass, 1 skipped as before) plus `npm run typecheck` and `npm run build`; the CI run URL is
 added when the branch is pushed.
 
 | Scenario | Test | Red: commit / run + failure message | Green: commit / run | Refactor note |
 |---|---|---|---|---|
 | AC-01 | `tests/ai_gateway_tools.test.ts > "AC-01 text-only request body is unchanged"` | f022bcc · passed on red (guard test: current behaviour) | 2222435 | none |
 | AC-02 | `ai_gateway_tools > "AC-02 forwards tools…"`, `"…empty tool_calls list"` | f022bcc · `AssertionError: provider body tools undefined` | 2222435 | none |
+| AC-03 (DoD review fix) | `ai_gateway_tools > "AC-03 an assistant tool-call message may omit content…"` | f87cdf7 · `400 content must be null or a string` | see green commit below | none |
 | AC-03 | `ai_gateway_tools > "AC-03 …"` (4 tests) | f022bcc · `400 messages[1].content is empty or too large` on a valid round trip; orphan/duplicate cases not rejected for the tool reason | 2222435 | the 40-message cap test passed on red (guard) |
 | AC-04 | `ai_gateway_tools > "AC-04 …"` (2 tests) | f022bcc · `Missing expected rejection` (tools ignored) | 2222435 | none |
 | AC-05 | `ai_gateway_vision > "AC-05 …"` (3), `ai_gateway_service > "SPEC-002 AC-05 images at the total cap fit the max body"` | 3868f6e · `400 content is empty or too large` instead of image errors | 2222435 (service test 34cd5ee passed on red: green already in place) | none |
 | AC-06 | `ai_gateway_tools > "AC-06 …"` (2) | f022bcc · `400 response_format must be text or json_object` | 2222435 | none |
+| AC-07 (DoD review fix) | `ai_gateway_service > "SPEC-002 AC-07 private routes apply to scoped tokens only…"` | f87cdf7 · failed with `401 !== 403` (test bug: identity JWT needs one scope and a UUID sub), fixed in the green commit; with the pre-fix code that JWT's sub reached the allow-list and was admitted | see green commit below | none |
 | AC-07 | `tests/ai_gateway_privacy.test.ts` (5) | 3a7922d · `403 Hosted AI generation is disabled` for an allow-listed route; fallback called for private data | 74aeb2d | deny cases passed on red (guards) |
+| AC-08 (DoD review fix) | `ai_gateway_service > "SPEC-002 AC-08 subject budgets require the bounded error cost policy…"` | f87cdf7 · `no problem reported` | see green commit below | none |
 | AC-08 | `ai_budget > "subject budget …"` (4), `ai_gateway_service > "SPEC-002 AC-08 …"` | 34cd5ee · `TS2554 expected 1-2 arguments` / second request 200 instead of 429 | 907c5de | none |
 | AC-09 | `ai_gateway_vision > "AC-09 telemetry holds counts only"`, `sentry > "SPEC-002 AC-09 scrubs image and tool payloads"` | 3868f6e · request rejected (no image support); 34cd5ee · `data:image… not scrubbed` | 2222435, 907c5de | none |
 | AC-10 | `ai_gateway_tools > "AC-10 …"` (2) | f022bcc · passed on red for the wrong reason (null content → 502); meaningful after green | 2222435 | none |
@@ -232,6 +236,7 @@ added when the branch is pushed.
 | Version | Date | Change | Scenarios affected | Approved by |
 |---|---|---|---|---|
 | 0.1 | 2026-11-07 | First draft | all | — |
+| 1.1 | 2026-11-07 | DoD review fixes: private routes for scoped tokens only, subject budgets need the bounded error policy, omitted assistant content accepted; AC-09 wording matches what is tested. Not changed: a provider tool call without an id stays a 502 (AC-10 as approved) | AC-03, 07, 08, 09 | Owner approval of 1.0 covers it: tighter, no new scope |
 | 1.0 | 2026-11-07 | Owner approved; implemented; red/green log filled | all | Owner |
 | 0.2 | 2026-11-07 | Review fixes: subject plumbing, no migration, private fallback, wire shapes, tool/schema/image cost in both checks, total image cap, latency budget, tool-call JSON exemption, leak wording; spend key matches `workspace:subject`, latency budget covers the reasoning timeout | AC-02, 03, 05–11, 13 | — |
 
@@ -241,4 +246,4 @@ added when the branch is pushed.
 |---|---|---|---|---|
 | Spec ready (before code, DoR) | Reviewer (checker) | Fresh Claude reviewer + Codex Stop review / 2026-11-07 | revise → fixed in 0.2 | 6 blocking + 8 non-blocking (Claude), 2 P2 (Codex) |
 | Spec ready (before code, DoR) | Approver | Owner / 2026-11-07 | approve | Chat reply "Approve, start TDD" to the question "Approve SPEC-002 and allow client personal data through the gateway?" |
-| Implemented (DoD) | Reviewer (checker) | | | |
+| Implemented (DoD) | Reviewer (checker) | Fresh Claude reviewer / 2026-11-07 | revise → fixed in 1.1 (1 blocking, 4 of 7 non-blocking fixed, rest documented) | review notes in the session; Codex Stop review pending |
