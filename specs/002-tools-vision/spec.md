@@ -6,8 +6,8 @@ Standard: ADR-0004 — TDD + SDD (architecture-docs, `docs/architecture/decision
 
 | Field | Value |
 |---|---|
-| Spec ID / version | SPEC-002 / 0.2 |
-| Status | draft |
+| Spec ID / version | SPEC-002 / 1.0 |
+| Status | approved; implemented on branch `spec/002-tools-vision`, awaiting DoD review and merge |
 | Repository / path | bookchaowalit/platform-ai-gateway-api / `specs/002-tools-vision/spec.md` |
 | Owner (maker) | Claude Code |
 | Reviewer (checker) | Fresh Claude reviewer session (no maker context), plus Codex review at Stop |
@@ -15,7 +15,7 @@ Standard: ADR-0004 — TDD + SDD (architecture-docs, `docs/architecture/decision
 | Requirement links | Owner request 2026-11-07: "one central AI system for client bots; a new AI is a config change" |
 | Related docs | `README.md`, `docs/shared-admission.md`, `api/ai_gateway.ts`; the first consumer's own migration plan lives in its private repository |
 | Main-only | no: branch `spec/002-tools-vision`, merged locally after review |
-| Created / approved | 2026-11-07 / pending |
+| Created / approved | 2026-11-07 / 2026-11-07 (owner) |
 
 ## 1. Problem and intent
 
@@ -194,27 +194,32 @@ All tests are `node:test` under `tsx` with a fake `fetch`; no network.
 
 ### Red / green log
 
+Red runs are local (`npx tsx --test <file>`), committed before the implementation on this branch. Green is the local
+full suite (`npm test`: 134 pass, 1 skipped as before) plus `npm run typecheck` and `npm run build`; the CI run URL is
+added when the branch is pushed.
+
 | Scenario | Test | Red: commit / run + failure message | Green: commit / run | Refactor note |
 |---|---|---|---|---|
-| AC-01 | | | | |
-| AC-02 | | | | |
-| AC-03 | | | | |
-| AC-04 | | | | |
-| AC-05 | | | | |
-| AC-06 | | | | |
-| AC-07 | | | | |
-| AC-08 | | | | |
-| AC-09 | | | | |
-| AC-10 | | | | |
-| AC-11 | | | | |
-| AC-12 | | | | |
-| AC-13 | | | | |
+| AC-01 | `tests/ai_gateway_tools.test.ts > "AC-01 text-only request body is unchanged"` | f022bcc · passed on red (guard test: current behaviour) | 2222435 | none |
+| AC-02 | `ai_gateway_tools > "AC-02 forwards tools…"`, `"…empty tool_calls list"` | f022bcc · `AssertionError: provider body tools undefined` | 2222435 | none |
+| AC-03 | `ai_gateway_tools > "AC-03 …"` (4 tests) | f022bcc · `400 messages[1].content is empty or too large` on a valid round trip; orphan/duplicate cases not rejected for the tool reason | 2222435 | the 40-message cap test passed on red (guard) |
+| AC-04 | `ai_gateway_tools > "AC-04 …"` (2 tests) | f022bcc · `Missing expected rejection` (tools ignored) | 2222435 | none |
+| AC-05 | `ai_gateway_vision > "AC-05 …"` (3), `ai_gateway_service > "SPEC-002 AC-05 images at the total cap fit the max body"` | 3868f6e · `400 content is empty or too large` instead of image errors | 2222435 (service test 34cd5ee passed on red: green already in place) | none |
+| AC-06 | `ai_gateway_tools > "AC-06 …"` (2) | f022bcc · `400 response_format must be text or json_object` | 2222435 | none |
+| AC-07 | `tests/ai_gateway_privacy.test.ts` (5) | 3a7922d · `403 Hosted AI generation is disabled` for an allow-listed route; fallback called for private data | 74aeb2d | deny cases passed on red (guards) |
+| AC-08 | `ai_budget > "subject budget …"` (4), `ai_gateway_service > "SPEC-002 AC-08 …"` | 34cd5ee · `TS2554 expected 1-2 arguments` / second request 200 instead of 429 | 907c5de | none |
+| AC-09 | `ai_gateway_vision > "AC-09 telemetry holds counts only"`, `sentry > "SPEC-002 AC-09 scrubs image and tool payloads"` | 3868f6e · request rejected (no image support); 34cd5ee · `data:image… not scrubbed` | 2222435, 907c5de | none |
+| AC-10 | `ai_gateway_tools > "AC-10 …"` (2) | f022bcc · passed on red for the wrong reason (null content → 502); meaningful after green | 2222435 | none |
+| AC-11 | `ai_gateway_tools > "AC-11 falls back with tools and images"`, `"…same timeout as the primary…"` | f022bcc · request rejected (no tools/images); timeout test cd8f03f is a characterization test of existing behaviour | 2222435, cd8f03f | none |
+| AC-12 | `ai_gateway_service > "SPEC-002 AC-12 status advertises capabilities"`, `ai_gateway_mcp > "SPEC-002 AC-12 …"` | 34cd5ee · `capabilities undefined`; the MCP test first failed on a test bug (wrong JSON level), fixed before green; MCP already passes fields through | 907c5de | none |
+| AC-13 | `ai_gateway_vision > "AC-13 …"` (3) | 3868f6e · request rejected (no image/tool support) | 2222435 | none |
+| NFR perf | `ai_gateway_vision > "NFR gateway overhead…"` | n/a (informational) · 6.5 ms locally | cd8f03f | none |
 
 ## 7. Risks and open questions
 
 | # | Risk or question | Impact | Owner | Resolution / date |
 |---|---|---|---|---|
-| 1 | Is client personal data (names, amounts, bill and slip photos) allowed through this gateway at all? The gateway stores no content, but it is one more processor in the path | Blocks AC-07 and the first consumer | Owner | open |
+| 1 | Is client personal data (names, amounts, bill and slip photos) allowed through this gateway at all? The gateway stores no content, but it is one more processor in the path | Blocks AC-07 and the first consumer | Owner | Allowed by the owner 2026-11-07 (approval reply); still gated per route by AC-07 |
 | 2 | Provider data retention: setting `AI_GATEWAY_PROVIDER_PRIVATE_DATA_ATTESTED=true` means the owner has checked the provider account's retention and training settings | Personal-data law exposure | Owner | open |
 | 3 | Whose provider key and money pays for a client's calls once they go through the gateway | Billing and budget numbers in `AI_GATEWAY_SUBJECT_BUDGETS_JSON` | Owner | open |
 | 4 | The gateway is one Railway replica with SQLite telemetry: if it is down, every client bot on it loses AI | Client outage while the gateway is down | Owner | Consumers keep a direct-provider rollback switch; shared admission (`docs/shared-admission.md`) is the route to more replicas |
@@ -227,6 +232,7 @@ All tests are `node:test` under `tsx` with a fake `fetch`; no network.
 | Version | Date | Change | Scenarios affected | Approved by |
 |---|---|---|---|---|
 | 0.1 | 2026-11-07 | First draft | all | — |
+| 1.0 | 2026-11-07 | Owner approved; implemented; red/green log filled | all | Owner |
 | 0.2 | 2026-11-07 | Review fixes: subject plumbing, no migration, private fallback, wire shapes, tool/schema/image cost in both checks, total image cap, latency budget, tool-call JSON exemption, leak wording; spend key matches `workspace:subject`, latency budget covers the reasoning timeout | AC-02, 03, 05–11, 13 | — |
 
 ## Approval
@@ -234,5 +240,5 @@ All tests are `node:test` under `tsx` with a fake `fetch`; no network.
 | Gate | Role | Name / date | Decision | Evidence |
 |---|---|---|---|---|
 | Spec ready (before code, DoR) | Reviewer (checker) | Fresh Claude reviewer + Codex Stop review / 2026-11-07 | revise → fixed in 0.2 | 6 blocking + 8 non-blocking (Claude), 2 P2 (Codex) |
-| Spec ready (before code, DoR) | Approver | Owner | | |
+| Spec ready (before code, DoR) | Approver | Owner / 2026-11-07 | approve | Chat reply "Approve, start TDD" to the question "Approve SPEC-002 and allow client personal data through the gateway?" |
 | Implemented (DoD) | Reviewer (checker) | | | |
