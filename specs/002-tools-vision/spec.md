@@ -6,7 +6,7 @@ Standard: ADR-0004 — TDD + SDD (architecture-docs, `docs/architecture/decision
 
 | Field | Value |
 |---|---|
-| Spec ID / version | SPEC-002 / 0.1 |
+| Spec ID / version | SPEC-002 / 0.2 |
 | Status | draft |
 | Repository / path | bookchaowalit/platform-ai-gateway-api / `specs/002-tools-vision/spec.md` |
 | Owner (maker) | Claude Code |
@@ -21,7 +21,7 @@ Standard: ADR-0004 — TDD + SDD (architecture-docs, `docs/architecture/decision
 
 - **Problem:** `POST /api/ai/generate` accepts only plain-text `system`/`user`/`assistant` messages and returns one text
   `content`. Client bots need three more things: function tools (the model proposes a call and the bot runs it on its
-  own ledger), image input (reading a photographed bill or transfer slip), and strict JSON-schema output. They also handle
+  own ledger), image input (reading photographed documents), and strict JSON-schema output. They also handle
   customer personal data, which the gateway refuses (`privacy_class` `private` returns 403), and the only budget is one
   global monthly ceiling, so one client cannot be capped on its own. So the first client bot calls the provider directly
   with its own key, outside the gateway's budget, rate limit and telemetry.
@@ -59,8 +59,8 @@ All tests are `node:test` under `tsx` with a fake `fetch`; no network.
 
 - **Given** `tools: [{type:"function", function:{name, description, parameters, strict:true}}]` and a provider reply with `tool_calls` and `content: null`
 - **When** the request is generated
-- **Then** the provider body carries `tools` (and `tool_choice` when given) unchanged
-- **And** the response has `content: null`, `tool_calls: [{id, name, arguments}]` with `arguments` as the raw JSON string, `finish_reason: "tool_calls"`, `output_trust: "untrusted_model_output"`
+- **Then** the provider body carries `tools` (and `tool_choice` when given) unchanged, with `parallel_tool_calls` passed through when given (boolean only)
+- **And** the response has `content: null`, `tool_calls: [{id, name, arguments}]` with `arguments` as the raw string from the provider (not guaranteed valid JSON; consumers parse defensively), `finish_reason: "tool_calls"`, `output_trust: "untrusted_model_output"`
 - **Test:** `tests/ai_gateway_tools.test.ts > "forwards tools and returns tool calls"` · level: unit
 
 ### AC-03 — A tool loop round trip is accepted
@@ -68,7 +68,8 @@ All tests are `node:test` under `tsx` with a fake `fetch`; no network.
 - **Given** messages `user`, `assistant` with `tool_calls`, then one `tool` message per call id
 - **When** generated
 - **Then** they are forwarded in order and the answer is returned
-- **And** a `tool` message whose `tool_call_id` matches no earlier assistant call is a 400, as is an assistant call left without its `tool` reply
+- **And** a `tool` message whose `tool_call_id` matches no earlier assistant call is a 400, as is an assistant call left without its `tool` reply, `tool` messages that do not directly follow their assistant message, or duplicate call ids
+- **And** an assistant message with `tool_calls` may have `content: null`; a `tool` message may have empty string content; tool messages count toward the 40-message cap
 - **Test:** `tests/ai_gateway_tools.test.ts > "accepts a tool round trip"`, `"rejects an orphan tool message"` · level: unit
 
 ### AC-04 — Tool definitions are bounded
@@ -82,9 +83,10 @@ All tests are `node:test` under `tsx` with a fake `fetch`; no network.
 - **Given** a user message with `content: [{type:"text",text}, {type:"image", data_url:"data:image/jpeg;base64,..."}]`
 - **When** generated
 - **Then** the provider receives an OpenAI-compatible `image_url` part with the same data URL
-- **And** `http(s)://` URLs, media types other than png, jpeg and webp, invalid base64, magic bytes that do not match the declared type, more than 4 images per request, or a decoded image over `AI_GATEWAY_MAX_IMAGE_BYTES` (default 1 MB) are each a 400; images in `system`, `assistant` or `tool` messages are a 400
+- **And** `http(s)://` URLs, media types other than png, jpeg and webp, invalid base64, magic bytes that do not match the declared type, more than 4 images per request, a decoded image over `AI_GATEWAY_MAX_IMAGE_BYTES` (default 1 MB), or decoded images together over `AI_GATEWAY_MAX_TOTAL_IMAGE_BYTES` (default 2.5 MB, so the base64 body fits the 4 MiB body cap) are each a 400; images in `system`, `assistant` or `tool` messages are a 400
 - **And** a body over `AI_GATEWAY_MAX_BODY_BYTES` is still a 413
-- **Test:** `tests/ai_gateway_vision.test.ts > "forwards a data-url image"`, `"rejects remote and malformed images"` · level: unit
+- **And** the forwarded part is exactly `{type:"image_url", image_url:{url:"data:..."}}`
+- **Test:** `tests/ai_gateway_vision.test.ts > "forwards a data-url image"`, `"rejects remote and malformed images"`, `tests/ai_gateway_service.test.ts > "images at the total cap fit the max body"` · level: unit + integration
 
 ### AC-06 — JSON-schema output
 
@@ -92,6 +94,9 @@ All tests are `node:test` under `tsx` with a fake `fetch`; no network.
 - **Then** it is forwarded as given; a schema over 16 KB or a bad `name` is a 400
 - **And** a text reply that is not valid JSON is a 502 `invalid_response` (text is never repaired)
 - **And** a reply that carries `tool_calls` with `content: null` is exempt from the JSON check (the schema applies to the final answer only)
+- **And** the gateway checks only that the final text parses as JSON; matching the schema is the provider's strict mode plus the consumer's own check (strict schemas need `additionalProperties: false`)
+- **And** `json_schema` may be combined with `tools`
+- **And** a JSON parse failure never echoes model content in the error
 - **And** the existing `json_object` rule (a message must ask for JSON) is unchanged
 - **Test:** `tests/ai_gateway_tools.test.ts > "forwards json_schema and rejects non-JSON replies"` · level: unit
 
@@ -101,8 +106,10 @@ All tests are `node:test` under `tsx` with a fake `fetch`; no network.
 - **When** a request has `privacy_class: "private"`
 - **Then** it is accepted only when the caller's token subject lists that route and the attestation flag is set; otherwise 403 as today
 - **And** `restricted` is always 403
+- **And** a private request never goes to the fallback model unless `AI_GATEWAY_FALLBACK_PRIVATE_DATA_ATTESTED=true`; without it, a retryable primary failure is returned as is
+- **And** the subject reaches `generateAi` as `options.subject` from `service.ts` (it is not read from the request body)
 - **And** an invalid `AI_GATEWAY_PRIVATE_ROUTES_JSON` makes the gateway refuse every private request (fail closed) and `/api/ai/status` reports the reason
-- **Test:** `tests/ai_gateway_privacy.test.ts > "private allowed only for allow-listed subject routes"` · level: unit
+- **Test:** `tests/ai_gateway_privacy.test.ts > "private allowed only for allow-listed subject routes"`, `"private request skips an unattested fallback"` · level: unit
 
 ### AC-08 — Per-subject monthly budget
 
@@ -110,18 +117,21 @@ All tests are `node:test` under `tsx` with a fake `fetch`; no network.
 - **When** a reservation would take that subject over its ceiling
 - **Then** the request is a 429 `budget_exceeded` and other subjects are unaffected
 - **And** the global `LLM_LAB_MONTHLY_BUDGET_USD` guard still applies to everyone
-- **And** telemetry rows carry `subject` (migration adds a nullable column; old rows count as no subject)
+- **And** the subject ceiling is checked against that subject's own spent plus in-flight reserved amount (a per-subject reservation map, not the global `reservationState`); `createAiBudgetGuard` takes the subject
+- **And** the budget key is the token `subject`; workspace JWT callers use the same `workspace:subject` key as the rate limiter
+- **And** spend per subject is read from the existing `metadata.subject` that `withSubject` already writes, so no schema change is needed (an index on `json_extract(metadata_json,'$.subject')` only if the query is slow)
 - **Test:** `tests/ai_budget.test.ts > "subject budget denies only that subject"`, `tests/ai_gateway_service.test.ts > "telemetry records subject"` · level: unit + integration (SQLite store)
 
 ### AC-09 — No content leaves through telemetry, logs or errors
 
 - **Given** requests with images, tool arguments and tool results
 - **Then** telemetry, Sentry events and error messages contain no image bytes, tool arguments, tool outputs or schema text; they hold only counts (`image_count`, `tool_count`, `tool_call_count`) and `has_tools`, `has_images`
+- **And** the Sentry scrubber replaces any `data:image/...;base64,` string and drops request `messages`, `tools` and `tool_calls` fields
 - **Test:** `tests/ai_gateway_vision.test.ts > "telemetry holds counts only"`, `tests/sentry.test.ts > "scrubs image and tool payloads"` · level: unit
 
 ### AC-10 — Provider tool calls are bounded
 
-- **When** the provider returns more than 16 tool calls, a call with arguments over 16 KB, a tool name not in the request, or a missing call id
+- **When** the provider returns more than 16 tool calls, a call with arguments over 16 KB, a tool name not in the request, a missing call id, or `finish_reason: "length"` together with `tool_calls` (truncated arguments)
 - **Then** the reply is a 502 `invalid_response` and nothing partial is returned
 - **Test:** `tests/ai_gateway_tools.test.ts > "rejects unbounded provider tool calls"` · level: unit
 
@@ -150,23 +160,27 @@ All tests are `node:test` under `tsx` with a fake `fetch`; no network.
 | Interface | Change | Contract |
 |---|---|---|
 | `POST /api/ai/generate` request | changed (additive) | New optional `tools`, `tool_choice` (`auto`, `none`, `required` or `{type:"function",function:{name}}`); `messages[].content` may be a parts array on `user`; `assistant.tool_calls`; role `tool` with `tool_call_id`; `response_format.type` adds `json_schema` |
+| Tool call shapes | new | Request `assistant.tool_calls` uses the OpenAI form `[{id, type:"function", function:{name, arguments}}]` and is forwarded unchanged; the response flattens provider calls to `[{id, name, arguments}]`; consumers convert back when they send the next round |
 | `POST /api/ai/generate` response | changed (additive) | `content: string \| null`; new `tool_calls: [{id, name, arguments}]`, present only when the request had tools |
 | `GET /api/ai/status` | changed (additive) | `capabilities`, `limits.max_image_bytes` |
 | Env | new | `AI_GATEWAY_PRIVATE_ROUTES_JSON`, `AI_GATEWAY_PROVIDER_PRIVATE_DATA_ATTESTED`, `AI_GATEWAY_SUBJECT_BUDGETS_JSON`, `AI_GATEWAY_MAX_IMAGE_BYTES`, `AI_GATEWAY_IMAGE_TOKEN_ESTIMATE`; raise `AI_GATEWAY_MAX_BODY_BYTES` to 2–4 MB on the service that takes images |
 | Contract id | unchanged | Stays `solo-empire.ai-gateway.v1`: every change is optional and additive |
 
-- **Data model / migration:** `database/migrations/` adds nullable `subject TEXT` and an index on `(subject, created_at)` to
-  the telemetry table. Reversible (drop the column and index); no backfill.
+- **Data model / migration:** none planned. `store.ts` runs the migration SQL on every start, so an `ALTER TABLE ADD
+  COLUMN` would fail on restart; per-subject spend uses the `metadata.subject` already stored. If an index turns out to
+  be needed it is `CREATE INDEX IF NOT EXISTS` (idempotent), with a test that restarts on an existing database.
 - **Backward compatibility:** text-only callers (current internal services and the MCP server) send nothing new and get
   the same body back (AC-01). `content` becomes nullable only for requests that send `tools`.
-- **Thai language policy:** the gateway still appends its Thai system message. Tool and JSON-schema outputs are not
+- **Provider parsing:** `callProvider` today treats non-string `content` as a 502; it changes to accept `content: null` when `tool_calls` are present.
+- **Thai language policy:** the gateway still appends its Thai system message, and only to string `system` content. Tool and JSON-schema outputs are not
   affected because field names and JSON are kept as written (already in the policy text).
 
 ## 5. Non-functional requirements
 
 | NFR | Target | How it is tested |
 |---|---|---|
-| Performance | Gateway overhead p95 ≤ 50 ms for a 1 MB image request (validation + base64 check), excluding provider time | Bench test in `tests/ai_gateway_vision.test.ts` with a fake provider |
+| Performance | Gateway overhead ≤ 50 ms for a 1 MB image request (validation + base64 check), excluding provider time | Informational timing in `tests/ai_gateway_vision.test.ts` (logged, fails only above 500 ms, so CI is not flaky) |
+| Latency budget | A request, including one fallback, finishes within `AI_GATEWAY_TIMEOUT_MS × 2`; consumers with a hard deadline (for example a chat reply token) set `AI_GATEWAY_TIMEOUT_MS` ≤ 15 s | AC-11 test asserts the second attempt uses the same timeout |
 | Security / privacy | No remote fetch; private data only on allow-listed routes with attestation; no content in telemetry, logs or Sentry; tool calls marked untrusted | AC-05, AC-07, AC-09, AC-10 |
 | Reliability / observability | Same timeouts and fallback as text; telemetry counts for images and tools; status reports config errors | AC-11, AC-12 |
 | Accessibility / UX | N/A: API only, no UI | — |
@@ -201,22 +215,24 @@ All tests are `node:test` under `tsx` with a fake `fetch`; no network.
 | # | Risk or question | Impact | Owner | Resolution / date |
 |---|---|---|---|---|
 | 1 | Is client personal data (names, amounts, bill and slip photos) allowed through this gateway at all? The gateway stores no content, but it is one more processor in the path | Blocks AC-07 and the first consumer | Owner | open |
-| 2 | Provider data retention: setting `AI_GATEWAY_PROVIDER_PRIVATE_DATA_ATTESTED=true` means the owner has checked the provider account's retention and training settings | Privacy and PDPA exposure | Owner | open |
+| 2 | Provider data retention: setting `AI_GATEWAY_PROVIDER_PRIVATE_DATA_ATTESTED=true` means the owner has checked the provider account's retention and training settings | Personal-data law exposure | Owner | open |
 | 3 | Whose provider key and money pays for a client's calls once they go through the gateway | Billing and budget numbers in `AI_GATEWAY_SUBJECT_BUDGETS_JSON` | Owner | open |
-| 4 | The gateway is one Railway replica with SQLite telemetry: if it is down, every client bot on it loses AI | Client outage; the 2026-11-07 Railway usage pause already hit both | Owner | Consumers keep a direct-provider rollback switch; shared admission (`docs/shared-admission.md`) is the route to more replicas |
+| 4 | The gateway is one Railway replica with SQLite telemetry: if it is down, every client bot on it loses AI | Client outage while the gateway is down | Owner | Consumers keep a direct-provider rollback switch; shared admission (`docs/shared-admission.md`) is the route to more replicas |
 | 5 | Providers differ in OpenAI-compatible tool and image support; a fallback model on another provider may reject tools | Fallback fails | Maker | Status reports the configured models; owner picks a fallback that supports tools |
-| 6 | Moving the first client bot is a separate change in its private repository (new `gateway` provider next to the direct ones, evals at parity, staging first) | Out of scope here | Maker | Plan in that repository's `docs/ai-gateway-migration.md` |
+| 7 | The OpenAI-compatible adapter carries no provider reasoning state (reasoning items, thinking blocks) between tool rounds, so tool-loop quality may differ from a native API | Consumer parity | Maker | Consumer evals compare both paths before any switch |
+| 6 | Moving the first client bot is a separate change in its private repository (new `gateway` provider next to the direct ones, evals at parity, staging first) | Out of scope here | Maker | Planned in the consumer's private repository |
 
 ## 8. Change log
 
 | Version | Date | Change | Scenarios affected | Approved by |
 |---|---|---|---|---|
 | 0.1 | 2026-11-07 | First draft | all | — |
+| 0.2 | 2026-11-07 | Review fixes: subject plumbing, no migration, private fallback, wire shapes, tool/schema/image cost in both checks, total image cap, latency budget, tool-call JSON exemption, leak wording | AC-02, 03, 05–11, 13 | — |
 
 ## Approval
 
 | Gate | Role | Name / date | Decision | Evidence |
 |---|---|---|---|---|
-| Spec ready (before code, DoR) | Reviewer (checker) | | | |
+| Spec ready (before code, DoR) | Reviewer (checker) | Fresh Claude reviewer + Codex Stop review / 2026-11-07 | revise → fixed in 0.2 | 6 blocking + 8 non-blocking (Claude), 2 P2 (Codex) |
 | Spec ready (before code, DoR) | Approver | Owner | | |
 | Implemented (DoD) | Reviewer (checker) | | | |
