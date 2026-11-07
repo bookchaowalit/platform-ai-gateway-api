@@ -203,14 +203,14 @@ added when the branch is pushed.
 |---|---|---|---|---|
 | AC-01 | `tests/ai_gateway_tools.test.ts > "AC-01 text-only request body is unchanged"` | f022bcc · passed on red (guard test: current behaviour) | 2222435 | none |
 | AC-02 | `ai_gateway_tools > "AC-02 forwards tools…"`, `"…empty tool_calls list"` | f022bcc · `AssertionError: provider body tools undefined` | 2222435 | none |
-| AC-03 (DoD review fix) | `ai_gateway_tools > "AC-03 an assistant tool-call message may omit content…"` | f87cdf7 · `400 content must be null or a string` | see green commit below | none |
+| AC-03 (DoD review fix) | `ai_gateway_tools > "AC-03 an assistant tool-call message may omit content…"` | f87cdf7 · `400 content must be null or a string` | b663e48 | none |
 | AC-03 | `ai_gateway_tools > "AC-03 …"` (4 tests) | f022bcc · `400 messages[1].content is empty or too large` on a valid round trip; orphan/duplicate cases not rejected for the tool reason | 2222435 | the 40-message cap test passed on red (guard) |
 | AC-04 | `ai_gateway_tools > "AC-04 …"` (2 tests) | f022bcc · `Missing expected rejection` (tools ignored) | 2222435 | none |
 | AC-05 | `ai_gateway_vision > "AC-05 …"` (3), `ai_gateway_service > "SPEC-002 AC-05 images at the total cap fit the max body"` | 3868f6e · `400 content is empty or too large` instead of image errors | 2222435 (service test 34cd5ee passed on red: green already in place) | none |
 | AC-06 | `ai_gateway_tools > "AC-06 …"` (2) | f022bcc · `400 response_format must be text or json_object` | 2222435 | none |
-| AC-07 (DoD review fix) | `ai_gateway_service > "SPEC-002 AC-07 private routes apply to scoped tokens only…"` | f87cdf7 · failed with `401 !== 403` (test bug: identity JWT needs one scope and a UUID sub), fixed in the green commit; with the pre-fix code that JWT's sub reached the allow-list and was admitted | see green commit below | none |
+| AC-07 (DoD review fix) | `ai_gateway_service > "SPEC-002 AC-07 private routes apply to scoped tokens only…"` | f87cdf7 · failed with `401 !== 403` (test bug: identity JWT needs one scope and a UUID sub), fixed in the green commit; with the pre-fix code that JWT's sub reached the allow-list and was admitted | b663e48 | none |
 | AC-07 | `tests/ai_gateway_privacy.test.ts` (5) | 3a7922d · `403 Hosted AI generation is disabled` for an allow-listed route; fallback called for private data | 74aeb2d | deny cases passed on red (guards) |
-| AC-08 (DoD review fix) | `ai_gateway_service > "SPEC-002 AC-08 subject budgets require the bounded error cost policy…"` | f87cdf7 · `no problem reported` | see green commit below | none |
+| AC-08 (DoD review fix) | `ai_gateway_service > "SPEC-002 AC-08 subject budgets require the bounded error cost policy…"` | f87cdf7 · `no problem reported` | b663e48 | none |
 | AC-08 | `ai_budget > "subject budget …"` (4), `ai_gateway_service > "SPEC-002 AC-08 …"` | 34cd5ee · `TS2554 expected 1-2 arguments` / second request 200 instead of 429 | 907c5de | none |
 | AC-09 | `ai_gateway_vision > "AC-09 telemetry holds counts only"`, `sentry > "SPEC-002 AC-09 scrubs image and tool payloads"` | 3868f6e · request rejected (no image support); 34cd5ee · `data:image… not scrubbed` | 2222435, 907c5de | none |
 | AC-10 | `ai_gateway_tools > "AC-10 …"` (2) | f022bcc · passed on red for the wrong reason (null content → 502); meaningful after green | 2222435 | none |
