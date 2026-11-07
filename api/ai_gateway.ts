@@ -773,7 +773,10 @@ async function callProvider(config: GatewayConfig, request: ValidatedRequest, mo
     config.maxContextChars * 4,
     Math.max(1_024, request.maxOutputTokens * 16),
   );
-  if (content !== null && Buffer.byteLength(content, 'utf8') > maxResponseBytes) {
+  // Tool-call names and arguments are model output too and share the same allowance.
+  const responseBytes = (content === null ? 0 : Buffer.byteLength(content, 'utf8'))
+    + (toolCalls ?? []).reduce((sum, call) => sum + Buffer.byteLength(call.name, 'utf8') + Buffer.byteLength(call.arguments, 'utf8'), 0);
+  if (responseBytes > maxResponseBytes) {
     return invalid('AI provider response exceeded the output limit');
   }
   // json_schema applies to the final answer only; a tool-call turn has no answer yet.
