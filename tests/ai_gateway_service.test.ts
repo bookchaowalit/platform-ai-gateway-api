@@ -616,3 +616,79 @@ test('identity profile: platform-identity tokens for ai-api work next to the sta
     await close(upstream.server);
   }
 });
+
+// ---- SPEC-002 service-level scenarios -----------------------------------------------------------
+
+test('SPEC-002 AC-08 subject budget denies only that subject and telemetry records subject', async () => {
+  const upstream = await startUpstream((body, res) => json(res, 200, okCompletion(body.model, {
+    usage: { prompt_tokens: 9_500, completion_tokens: 400, total_tokens: 9_900 },
+  })));
+  const gateway = await startGateway(gatewayEnv(upstream.url, {
+    AI_GATEWAY_MONTHLY_BUDGET_USD: '100',
+    AI_GATEWAY_INPUT_USD_PER_1K: '0.1',
+    AI_GATEWAY_OUTPUT_USD_PER_1K: '0.1',
+    AI_GATEWAY_SUBJECT_BUDGETS_JSON: JSON.stringify({ 'ev3-web': 1 }),
+  }));
+  try {
+    assert.equal((await post(gateway.url, GENERATE_TOKEN, baseRequest)).status, 200);
+    const denied = await post(gateway.url, GENERATE_TOKEN, baseRequest);
+    assert.equal(denied.status, 429);
+    assert.equal((await denied.json().then(asAny)).code, 'monthly_budget_exceeded');
+    // Another subject is unaffected.
+    assert.equal((await post(gateway.url, BOTH_TOKEN, baseRequest)).status, 200);
+    const subjects = telemetryRows(gateway.store).map((row) => JSON.parse(row.metadata_json).subject);
+    assert.deepEqual(subjects, ['ev3-web', 'ev3-web', 'ev3-full']);
+  } finally {
+    await gateway.stop();
+    await close(upstream.server);
+  }
+});
+
+test('SPEC-002 AC-05 images at the total cap fit the max body', async () => {
+  const upstream = await startUpstream((body, res) => json(res, 200, okCompletion(body.model)));
+  const gateway = await startGateway(gatewayEnv(upstream.url, {
+    AI_GATEWAY_MAX_BODY_BYTES: String(4 * 1024 * 1024),
+    AI_GATEWAY_MAX_TOKEN_BUDGET: '16384',
+  }));
+  try {
+    const perImage = 2_621_440 / 4;
+    const jpeg = Buffer.alloc(perImage, 0);
+    jpeg[0] = 0xff; jpeg[1] = 0xd8; jpeg[2] = 0xff;
+    const part = { type: 'image', data_url: `data:image/jpeg;base64,${jpeg.toString('base64')}` };
+    const response = await post(gateway.url, GENERATE_TOKEN, {
+      ...baseRequest,
+      token_budget: 16384,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'อ่านยอด' }, part, part, part, part] }],
+    });
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal(upstream.calls[0].body.messages[1].content.length, 5);
+  } finally {
+    await gateway.stop();
+    await close(upstream.server);
+  }
+});
+
+test('SPEC-002 AC-12 status advertises capabilities', async () => {
+  const upstream = await startUpstream((body, res) => json(res, 200, okCompletion(body.model)));
+  const gateway = await startGateway(gatewayEnv(upstream.url, {
+    AI_GATEWAY_PRIVATE_ROUTES_JSON: JSON.stringify({ 'ev3-full': ['a.chat', 'a.read'], other: ['x'] }),
+  }));
+  try {
+    const status = await (await fetch(`${gateway.url}/api/ai/status`, { headers: { Authorization: `Bearer ${BOTH_TOKEN}` } })).json().then(asAny);
+    assert.deepEqual(status.capabilities, { tools: true, image_input: true, json_schema: true, private_routes: 2, private_routes_config: 'ok' });
+    assert.equal(status.limits.max_image_bytes, 1_048_576);
+    assert.equal(status.limits.max_total_image_bytes, 2_621_440);
+    const reader = await (await fetch(`${gateway.url}/api/ai/status`, { headers: { Authorization: `Bearer ${READ_TOKEN}` } })).json().then(asAny);
+    assert.equal(reader.capabilities.private_routes, 0);
+  } finally {
+    await gateway.stop();
+    await close(upstream.server);
+  }
+  const bad = await startGateway(gatewayEnv('http://127.0.0.1:9', { AI_GATEWAY_PRIVATE_ROUTES_JSON: '{bad' }));
+  try {
+    const status = await (await fetch(`${bad.url}/api/ai/status`, { headers: { Authorization: `Bearer ${READ_TOKEN}` } })).json().then(asAny);
+    assert.equal(status.capabilities.private_routes_config, 'invalid');
+  } finally {
+    await bad.stop();
+  }
+});

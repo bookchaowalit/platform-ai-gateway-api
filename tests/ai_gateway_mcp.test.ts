@@ -184,3 +184,10 @@ test('validation errors are the fixed text invalid_arguments and echo no argumen
   assert.doesNotMatch(JSON.stringify(unknown), /MARKER/);
   assert.equal(f.requests.length, 0);
 });
+
+test('SPEC-002 AC-12 status passes capabilities through unchanged', async () => {
+  const body = { ...(STATUS as Record<string, unknown>), capabilities: { tools: true, image_input: true, json_schema: true, private_routes: 0, private_routes_config: 'unset' } };
+  const client = await connect(fake(200, body));
+  const text = (await call(client, 'ai_gateway.status')).text;
+  assert.deepEqual(JSON.parse(text).capabilities, body.capabilities);
+});
