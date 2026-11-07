@@ -223,3 +223,97 @@ test('gateway persists telemetry while reservation is still held', async () => {
     assert.ok(getAiBudgetStatus(db, env).active_reserved_usd > 0);
   } finally { globalThis.fetch = original; }
 });
+
+// ---- SPEC-002 AC-08: per-subject monthly budget -------------------------------------------------
+import { loadTelemetryMigration, openTelemetryStore } from '../api/ai-gateway-service/store.js';
+import { AiBudgetError } from '../api/ai_budget.js';
+
+function spendStore(rows: Array<{ subject: string; workspace?: string; cost: number | null }>) {
+  const store = openTelemetryStore(':memory:', loadTelemetryMigration({}));
+  rows.forEach((row, index) => store.record({
+    run_id: `seed-${index}`,
+    route: 'seed',
+    prompt_version: 'seed-v1',
+    provider: 'test-provider',
+    model: 'test-model',
+    input_tokens: 1,
+    output_tokens: 1,
+    total_tokens: 2,
+    token_budget: 512,
+    latency_ms: 1,
+    estimated_cost_usd: row.cost,
+    cache_hit: false,
+    status: 'success',
+    metadata: { subject: row.subject, ...(row.workspace ? { workspace_id: row.workspace } : {}) },
+  }));
+  return store;
+}
+
+const LEDGER = { LLM_LAB_LEDGER_PATH: '/dev/null/ledger' };
+
+test('subject budget denies only that subject', async () => {
+  const store = spendStore([{ subject: 'client-a', cost: 0.9 }, { subject: 'client-b', cost: 0.9 }]);
+  try {
+    const env = { ...LEDGER, AI_GATEWAY_SUBJECT_BUDGETS_JSON: JSON.stringify({ 'client-a': 1 }) } as NodeJS.ProcessEnv;
+    const guardA = createAiBudgetGuard(store.db, env, { subject: 'client-a' });
+    assert.ok(guardA);
+    await assert.rejects(() => guardA.reserve(0.2), (error: unknown) => error instanceof AiBudgetError && error.reason === 'request_would_exceed_subject_budget');
+    // In-flight reservations count against the subject too.
+    const release = await guardA.reserve(0.06);
+    await assert.rejects(() => guardA.reserve(0.06), /subject/i);
+    release();
+    await guardA.reserve(0.06);
+    // Another subject without a subject budget and no global budget has no guard at all.
+    assert.equal(createAiBudgetGuard(store.db, env, { subject: 'client-b' }), undefined);
+  } finally {
+    store.close();
+  }
+});
+
+test('subject budget keys workspace callers by workspace:subject', async () => {
+  const store = spendStore([{ subject: 'client-a', workspace: 'w1', cost: 0.9 }]);
+  try {
+    const env = { ...LEDGER, AI_GATEWAY_SUBJECT_BUDGETS_JSON: JSON.stringify({ 'w1:client-a': 1, 'client-a': 1 }) } as NodeJS.ProcessEnv;
+    const workspaceGuard = createAiBudgetGuard(store.db, env, { subject: 'client-a', workspace: 'w1' });
+    assert.ok(workspaceGuard);
+    await assert.rejects(() => workspaceGuard.reserve(0.2), /subject/i);
+    // The plain-token key does not see the workspace rows.
+    const plainGuard = createAiBudgetGuard(store.db, env, { subject: 'client-a' });
+    assert.ok(plainGuard);
+    await plainGuard.reserve(0.2);
+    assert.equal(createAiBudgetGuard(store.db, env, { subject: 'client-a', workspace: 'w2' }), undefined);
+  } finally {
+    store.close();
+  }
+});
+
+test('the global budget still applies beside a subject budget', async () => {
+  const store = spendStore([{ subject: 'client-b', cost: 0.95 }]);
+  try {
+    const env = { ...LEDGER, LLM_LAB_MONTHLY_BUDGET_USD: '1', AI_GATEWAY_SUBJECT_BUDGETS_JSON: JSON.stringify({ 'client-a': 10 }) } as NodeJS.ProcessEnv;
+    const guard = createAiBudgetGuard(store.db, env, { subject: 'client-a' });
+    assert.ok(guard);
+    await assert.rejects(() => guard.reserve(0.1), /monthly budget exceeded/i);
+    // A subject denial releases the global reservation it already took.
+    const tight = { ...env, AI_GATEWAY_SUBJECT_BUDGETS_JSON: JSON.stringify({ 'client-a': 0.01 }) } as NodeJS.ProcessEnv;
+    const tightGuard = createAiBudgetGuard(store.db, tight, { subject: 'client-a' });
+    await assert.rejects(() => tightGuard!.reserve(0.02), /subject/i);
+    assert.equal(getAiBudgetStatus(store.db, tight).active_reserved_usd, 0);
+  } finally {
+    store.close();
+  }
+});
+
+test('subject budget fails closed on unknown cost and invalid config', async () => {
+  const store = spendStore([{ subject: 'client-a', cost: null }]);
+  try {
+    const env = { ...LEDGER, AI_GATEWAY_SUBJECT_BUDGETS_JSON: JSON.stringify({ 'client-a': 5 }) } as NodeJS.ProcessEnv;
+    await assert.rejects(() => createAiBudgetGuard(store.db, env, { subject: 'client-a' })!.reserve(0.01), /subject/i);
+    for (const raw of ['{bad', '[]', '{"client-a":-1}', '{"client-a":"5"}', '{"bad key!":1}']) {
+      assert.throws(() => createAiBudgetGuard(store.db, { ...LEDGER, AI_GATEWAY_SUBJECT_BUDGETS_JSON: raw } as NodeJS.ProcessEnv, { subject: 'client-a' }),
+        (error: unknown) => error instanceof AiBudgetError && error.reason === 'invalid_subject_budget');
+    }
+  } finally {
+    store.close();
+  }
+});

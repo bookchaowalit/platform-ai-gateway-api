@@ -103,3 +103,17 @@ test('scrubEvent drops the dynamic sampling context', () => {
   const out = scrubEvent({ contexts: { trace: { trace_id: 't', dynamic_sampling_context: { user_id: 'alice' } } } });
   assert.deepEqual(out.contexts.trace, { trace_id: 't' });
 });
+
+test('SPEC-002 AC-09 scrubs image and tool payloads', () => {
+  const image = `data:image/jpeg;base64,${Buffer.alloc(64, 7).toString('base64')}`;
+  assert.equal(scrub(`bad part ${image} end`), 'bad part data:image/***;base64,*** end');
+  const event = scrubEvent({
+    exception: { values: [{ value: `failed on ${image}` }] },
+    request: { method: 'POST', data: { messages: [{ content: image }], tools: [{ name: 'record_bill' }] } },
+    extra: { tool_calls: [{ arguments: '{"amount":8450}' }] },
+  });
+  const serialized = JSON.stringify(event);
+  assert.ok(!serialized.includes('base64,/'), serialized);
+  assert.ok(!serialized.includes('record_bill'));
+  assert.ok(!serialized.includes('8450'));
+});

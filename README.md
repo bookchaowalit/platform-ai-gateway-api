@@ -69,6 +69,35 @@ unknown arguments are rejected before any HTTP call. Errors are a fixed message 
   `tsx`; the hosted service build and Dockerfile do not use it.
 - Tests: `npm test` (`tests/ai_gateway_mcp.test.ts`; fake `fetch`, in-memory MCP client, no network).
 
+## Tools, images and JSON schema (SPEC-002)
+
+`POST /api/ai/generate` also accepts, all optional and additive (text-only callers are unchanged):
+
+- `tools` (1–32 OpenAI-style function tools), `tool_choice`, `parallel_tool_calls`. The gateway forwards them and
+  returns `tool_calls: [{id, name, arguments}]` (`content` is `null` on a tool-call turn); the caller runs every tool
+  and sends the next round with an assistant `tool_calls` message and one `tool` message per call. The gateway keeps
+  no state and never executes a tool. `arguments` is the provider's raw string: parse it defensively.
+- User content parts: `[{type:"text",text}, {type:"image",data_url:"data:image/jpeg;base64,..."}]`. PNG, JPEG and
+  WebP data URLs only (no remote URLs); at most 4 images.
+- `response_format: {type:"json_schema", json_schema:{name, schema, strict}}`. A final text reply must parse as JSON.
+
+Settings (Railway variables):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AI_GATEWAY_MAX_IMAGE_BYTES` / `AI_GATEWAY_MAX_TOTAL_IMAGE_BYTES` | 1 MiB / 2.5 MiB | Decoded size per image and per request. Raise `AI_GATEWAY_MAX_BODY_BYTES` (max 4 MiB) to take images |
+| `AI_GATEWAY_IMAGE_TOKEN_ESTIMATE` | 1600 | Input tokens reserved per image for `token_budget` and the budget guard |
+| `AI_GATEWAY_PRIVATE_ROUTES_JSON` | unset | `{"<scoped token subject>": ["<route>", ...]}`: routes that may send `privacy_class: "private"`. Only scoped static tokens (`API_TOKENS_JSON`) qualify; workspace and identity JWTs never do. Malformed = every private request refused |
+| `AI_GATEWAY_PROVIDER_PRIVATE_DATA_ATTESTED` | off | Owner has checked the provider's retention and training settings; required for any private request |
+| `AI_GATEWAY_FALLBACK_PRIVATE_DATA_ATTESTED` | off | Same for the fallback model; without it private requests never fall back |
+| `AI_GATEWAY_SUBJECT_BUDGETS_JSON` | unset | `{"<subject or workspace:subject>": <monthly USD>}`: per-caller monthly cap on top of the global budget. Startup refuses it unless `AI_GATEWAY_ERROR_COST_POLICY=bounded` (otherwise one provider error row with an unknown cost would lock that caller out for the month) |
+
+Notes for operators: a failed telemetry write keeps that request's budget reservation (global and subject) until the
+process restarts, as the global guard always did. The `response_format` 400 message now also names `json_schema`.
+
+`GET /api/ai/status` reports `capabilities` (tools, image input, json_schema, the caller's private route count and
+whether that config parsed) and the image limits.
+
 ## Staged shared admission
 
 The default production behavior remains unchanged. Explicit workspace JWT and

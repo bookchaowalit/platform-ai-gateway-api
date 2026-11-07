@@ -51,6 +51,20 @@ type SqliteDatabase = {
 
 const CONTRACT = 'solo-empire.llm-lab-budget.v1' as const;
 const reservationState = new WeakMap<object, number>();
+// SPEC-002 AC-08: in-flight reservations per budget key, so concurrent calls of one subject add up.
+const subjectReservationState = new WeakMap<object, Map<string, number>>();
+const SUBJECT_BUDGET_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,200}$/;
+
+/** The authenticated caller a subject budget applies to; workspace JWT callers carry a workspace. */
+export interface AiBudgetCaller {
+  subject: string;
+  workspace?: string;
+}
+
+/** Same key as the rate limiter: `workspace:subject` for workspace callers, else the subject. */
+export function aiBudgetKey(caller: AiBudgetCaller): string {
+  return caller.workspace ? `${caller.workspace}:${caller.subject}` : caller.subject;
+}
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 function parseNumber(raw: string | undefined, fallback: number | null): number | null {
@@ -300,8 +314,103 @@ export function getAiBudgetStatus(db: SqliteDatabase, env: NodeJS.ProcessEnv = p
   };
 }
 
-export function createAiBudgetGuard(db: SqliteDatabase, env: NodeJS.ProcessEnv = process.env): AiBudgetGuard | undefined {
+/** AI_GATEWAY_SUBJECT_BUDGETS_JSON: {"<budget key>": monthly USD}. Any malformed value fails closed. */
+function subjectBudgets(env: NodeJS.ProcessEnv): Map<string, number> | null {
+  const raw = (env.AI_GATEWAY_SUBJECT_BUDGETS_JSON || '').trim();
+  if (!raw) return null;
+  const invalid = () => new AiBudgetError('AI subject budget configuration is invalid', 'invalid_subject_budget');
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { throw invalid(); }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw invalid();
+  const budgets = new Map<string, number>();
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!SUBJECT_BUDGET_KEY.test(key) || typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw invalid();
+    budgets.set(key, value);
+  }
+  return budgets;
+}
+
+/** Startup check: null when AI_GATEWAY_SUBJECT_BUDGETS_JSON is unset or valid, else a fixed message. */
+export function subjectBudgetConfigError(env: NodeJS.ProcessEnv): string | null {
+  try { subjectBudgets(env); return null; } catch { return 'AI_GATEWAY_SUBJECT_BUDGETS_JSON is invalid'; }
+}
+
+function querySubjectSpend(db: SqliteDatabase, caller: AiBudgetCaller, bounds = periodBounds()): { spent: number; unknown: number } {
+  try {
+    const row = db.prepare(
+      `SELECT COALESCE(SUM(estimated_cost_usd), 0) AS spent,
+              COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL
+                                      AND provider IS NOT NULL
+                                THEN 1 ELSE 0 END), 0) AS unknown
+         FROM ai_run_telemetry
+        WHERE created_at >= ? AND created_at < ?
+          AND json_extract(metadata_json, '$.subject') = ?
+          AND COALESCE(json_extract(metadata_json, '$.workspace_id'), '') = ?`,
+    ).get(bounds.start, bounds.end, caller.subject, caller.workspace || '') || {};
+    const spent = Number(row.spent || 0);
+    const unknown = Number(row.unknown || 0);
+    if (!Number.isFinite(spent) || !Number.isFinite(unknown)) throw new Error('non-finite budget row');
+    return { spent, unknown };
+  } catch {
+    throw new AiBudgetError('AI subject budget cost signal is unavailable', 'cost_signal_unavailable');
+  }
+}
+
+function reserveSubject(db: SqliteDatabase, caller: AiBudgetCaller, limit: number, estimatedCostUsd: number | null, allowUnmetered: boolean): () => void {
+  if (estimatedCostUsd !== null && (!Number.isFinite(estimatedCostUsd) || estimatedCostUsd < 0)) {
+    throw new AiBudgetError('AI request cost estimate is invalid', 'invalid_cost_estimate');
+  }
+  if (estimatedCostUsd === null && !allowUnmetered) {
+    throw new AiBudgetError('AI request has no measurable rate card for the subject budget', 'unmetered_request');
+  }
+  const spend = querySubjectSpend(db, caller);
+  if (spend.unknown > 0 && !allowUnmetered) {
+    throw new AiBudgetError('AI subject monthly budget is not available', 'unmetered_api_events');
+  }
+  const key = aiBudgetKey(caller);
+  const reservations = subjectReservationState.get(db as object) ?? new Map<string, number>();
+  subjectReservationState.set(db as object, reservations);
+  const estimate = estimatedCostUsd || 0;
+  const current = reservations.get(key) || 0;
+  if (spend.spent + current + estimate > limit + 1e-9) {
+    throw new AiBudgetError('AI subject monthly budget exceeded', 'request_would_exceed_subject_budget');
+  }
+  reservations.set(key, current + estimate);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    reservations.set(key, Math.max(0, (reservations.get(key) || 0) - estimate));
+  };
+}
+
+/**
+ * Reservation guard for one request. The global monthly budget (when configured) and the caller's
+ * own subject budget (when AI_GATEWAY_SUBJECT_BUDGETS_JSON lists its key) must both admit it.
+ * Returns undefined when neither applies.
+ */
+export function createAiBudgetGuard(db: SqliteDatabase, env: NodeJS.ProcessEnv = process.env, caller?: AiBudgetCaller): AiBudgetGuard | undefined {
   const settings = config(env);
+  const budgets = subjectBudgets(env);
+  const subjectLimit = caller && budgets ? budgets.get(aiBudgetKey(caller)) ?? null : null;
+  const globalGuard = createGlobalGuard(db, env, settings);
+  if (!globalGuard && subjectLimit === null) return undefined;
+  return {
+    async reserve(estimatedCostUsd: number | null): Promise<() => void> {
+      const releaseGlobal = globalGuard ? await globalGuard.reserve(estimatedCostUsd) : () => undefined;
+      if (subjectLimit === null || !caller) return releaseGlobal;
+      try {
+        const releaseSubject = reserveSubject(db, caller, subjectLimit, estimatedCostUsd, settings.allowUnmetered);
+        return () => { releaseSubject(); releaseGlobal(); };
+      } catch (error) {
+        releaseGlobal();
+        throw error;
+      }
+    },
+  };
+}
+
+function createGlobalGuard(db: SqliteDatabase, env: NodeJS.ProcessEnv, settings: ReturnType<typeof config>): AiBudgetGuard | undefined {
   if (settings.budget === null) return undefined;
   return {
     async reserve(estimatedCostUsd: number | null): Promise<() => void> {

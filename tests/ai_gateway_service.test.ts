@@ -616,3 +616,119 @@ test('identity profile: platform-identity tokens for ai-api work next to the sta
     await close(upstream.server);
   }
 });
+
+// ---- SPEC-002 service-level scenarios -----------------------------------------------------------
+
+test('SPEC-002 AC-08 subject budget denies only that subject and telemetry records subject', async () => {
+  const upstream = await startUpstream((body, res) => json(res, 200, okCompletion(body.model, {
+    usage: { prompt_tokens: 9_500, completion_tokens: 400, total_tokens: 9_900 },
+  })));
+  const gateway = await startGateway(gatewayEnv(upstream.url, {
+    AI_GATEWAY_MONTHLY_BUDGET_USD: '100',
+    AI_GATEWAY_INPUT_USD_PER_1K: '0.1',
+    AI_GATEWAY_OUTPUT_USD_PER_1K: '0.1',
+    AI_GATEWAY_SUBJECT_BUDGETS_JSON: JSON.stringify({ 'ev3-web': 1 }),
+  }));
+  try {
+    assert.equal((await post(gateway.url, GENERATE_TOKEN, baseRequest)).status, 200);
+    const denied = await post(gateway.url, GENERATE_TOKEN, baseRequest);
+    assert.equal(denied.status, 429);
+    assert.equal((await denied.json().then(asAny)).code, 'monthly_budget_exceeded');
+    // Another subject is unaffected.
+    assert.equal((await post(gateway.url, BOTH_TOKEN, baseRequest)).status, 200);
+    const subjects = telemetryRows(gateway.store).map((row) => JSON.parse(row.metadata_json).subject);
+    assert.deepEqual(subjects, ['ev3-web', 'ev3-web', 'ev3-full']);
+  } finally {
+    await gateway.stop();
+    await close(upstream.server);
+  }
+});
+
+test('SPEC-002 AC-05 images at the total cap fit the max body', async () => {
+  const upstream = await startUpstream((body, res) => json(res, 200, okCompletion(body.model)));
+  const gateway = await startGateway(gatewayEnv(upstream.url, {
+    AI_GATEWAY_MAX_BODY_BYTES: String(4 * 1024 * 1024),
+    AI_GATEWAY_MAX_TOKEN_BUDGET: '16384',
+  }));
+  try {
+    const perImage = 2_621_440 / 4;
+    const jpeg = Buffer.alloc(perImage, 0);
+    jpeg[0] = 0xff; jpeg[1] = 0xd8; jpeg[2] = 0xff;
+    const part = { type: 'image', data_url: `data:image/jpeg;base64,${jpeg.toString('base64')}` };
+    const response = await post(gateway.url, GENERATE_TOKEN, {
+      ...baseRequest,
+      token_budget: 16384,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'อ่านยอด' }, part, part, part, part] }],
+    });
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal(upstream.calls[0].body.messages[1].content.length, 5);
+  } finally {
+    await gateway.stop();
+    await close(upstream.server);
+  }
+});
+
+test('SPEC-002 AC-12 status advertises capabilities', async () => {
+  const upstream = await startUpstream((body, res) => json(res, 200, okCompletion(body.model)));
+  const gateway = await startGateway(gatewayEnv(upstream.url, {
+    AI_GATEWAY_PRIVATE_ROUTES_JSON: JSON.stringify({ 'ev3-full': ['a.chat', 'a.read'], other: ['x'] }),
+  }));
+  try {
+    const status = await (await fetch(`${gateway.url}/api/ai/status`, { headers: { Authorization: `Bearer ${BOTH_TOKEN}` } })).json().then(asAny);
+    assert.deepEqual(status.capabilities, { tools: true, image_input: true, json_schema: true, private_routes: 2, private_routes_config: 'ok' });
+    assert.equal(status.limits.max_image_bytes, 1_048_576);
+    assert.equal(status.limits.max_total_image_bytes, 2_621_440);
+    const reader = await (await fetch(`${gateway.url}/api/ai/status`, { headers: { Authorization: `Bearer ${READ_TOKEN}` } })).json().then(asAny);
+    assert.equal(reader.capabilities.private_routes, 0);
+  } finally {
+    await gateway.stop();
+    await close(upstream.server);
+  }
+  const bad = await startGateway(gatewayEnv('http://127.0.0.1:9', { AI_GATEWAY_PRIVATE_ROUTES_JSON: '{bad' }));
+  try {
+    const status = await (await fetch(`${bad.url}/api/ai/status`, { headers: { Authorization: `Bearer ${READ_TOKEN}` } })).json().then(asAny);
+    assert.equal(status.capabilities.private_routes_config, 'invalid');
+  } finally {
+    await bad.stop();
+  }
+});
+
+test('SPEC-002 AC-07 private routes apply to scoped tokens only, never to a JWT with the same sub', async () => {
+  const issuer = 'https://identity.example.test';
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const keys = createLocalJWKSet({ keys: [{ ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256' }] });
+  const identityToken = async (sub: string, scope: string) => {
+    const now = Math.floor(Date.now() / 1000);
+    return new SignJWT({ ws: randomUUID(), scope, jti: randomUUID() }).setProtectedHeader({ alg: 'RS256', kid: 'k1' })
+      .setIssuer(issuer).setAudience('ai-api').setSubject(sub).setIssuedAt(now).setExpirationTime(now + 900).sign(privateKey);
+  };
+  const person = randomUUID();
+  const upstream = await startUpstream((body, res) => json(res, 200, okCompletion(body.model)));
+  const env = gatewayEnv(upstream.url, {
+    AI_GATEWAY_AUTH_PROFILE: 'identity',
+    AI_GATEWAY_IDENTITY_ISSUER: issuer,
+    // A JWT whose sub equals an allow-listed key must still be refused.
+    AI_GATEWAY_PRIVATE_ROUTES_JSON: JSON.stringify({ 'ev3-full': ['ev3-chat'], [person]: ['ev3-chat'] }),
+    AI_GATEWAY_PROVIDER_PRIVATE_DATA_ATTESTED: 'true',
+  });
+  const gateway = await startGateway(env, ':memory:', keys);
+  try {
+    const privateRequest = { ...baseRequest, privacy_class: 'private' };
+    assert.equal((await post(gateway.url, BOTH_TOKEN, privateRequest)).status, 200);
+    assert.equal((await post(gateway.url, await identityToken(person, 'ai:generate'), privateRequest)).status, 403);
+    const status = await (await fetch(`${gateway.url}/api/ai/status`, { headers: { Authorization: `Bearer ${await identityToken(person, 'ai:read')}` } })).json().then(asAny);
+    assert.equal(status.capabilities.private_routes, 0);
+    assert.equal(upstream.calls.length, 1);
+  } finally {
+    await gateway.stop();
+    await close(upstream.server);
+  }
+});
+
+test('SPEC-002 AC-08 subject budgets require the bounded error cost policy and valid config at startup', () => {
+  const env = gatewayEnv('http://127.0.0.1:9', { AI_GATEWAY_SUBJECT_BUDGETS_JSON: JSON.stringify({ 'ev3-web': 1 }) });
+  assert.ok(serviceConfigurationProblems(env).some((p) => /AI_GATEWAY_ERROR_COST_POLICY=bounded/.test(p)));
+  assert.deepEqual(serviceConfigurationProblems({ ...env, AI_GATEWAY_ERROR_COST_POLICY: 'bounded' }), []);
+  assert.ok(serviceConfigurationProblems({ ...env, AI_GATEWAY_ERROR_COST_POLICY: 'bounded', AI_GATEWAY_SUBJECT_BUDGETS_JSON: '{bad' })
+    .some((p) => /AI_GATEWAY_SUBJECT_BUDGETS_JSON/.test(p)));
+});
