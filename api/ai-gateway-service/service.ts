@@ -323,6 +323,7 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
       }
       try {
         const generated = await generateAi(body, env, {
+          subject,
           budgetGuard,
           attemptAdmission: shared?.forCaller(result.authorization!),
           recordTelemetry: (event) => store.record(withSubject(event, subject, result.workspace)),

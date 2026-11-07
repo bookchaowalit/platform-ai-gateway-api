@@ -126,6 +126,8 @@ export interface AiGatewayStatus {
 }
 
 export interface AiGenerateOptions {
+  /** Authenticated caller subject from the service; never read from the request body. */
+  subject?: string;
   budgetGuard?: AiBudgetGuard;
   attemptAdmission?: AiAttemptAdmission;
   recordTelemetry?: (event: AiTelemetryEvent) => void;
@@ -454,17 +456,62 @@ interface ValidatedRequest {
   structuralBytes: number;
 }
 
-function validateRequest(input: unknown, config: GatewayConfig): ValidatedRequest {
+const PRIVATE_SUBJECT = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/; // same as API_TOKENS_JSON subjects
+const PRIVATE_ROUTE = /^[A-Za-z0-9_.:/-]{1,64}$/;
+
+function flagOn(raw: string | undefined): boolean {
+  return ['1', 'true', 'yes', 'on'].includes((raw || '').trim().toLowerCase());
+}
+
+export interface PrivateRouteConfig {
+  state: 'unset' | 'ok' | 'invalid';
+  routes: Map<string, Set<string>>;
+  providerAttested: boolean;
+  fallbackAttested: boolean;
+}
+
+/**
+ * SPEC-002 AC-07. AI_GATEWAY_PRIVATE_ROUTES_JSON maps a token subject to the routes that may carry
+ * privacy_class "private". Any malformed value disables every private route (fail closed).
+ */
+export function readPrivateRoutes(env: NodeJS.ProcessEnv = process.env): PrivateRouteConfig {
+  const base = {
+    providerAttested: flagOn(env.AI_GATEWAY_PROVIDER_PRIVATE_DATA_ATTESTED),
+    fallbackAttested: flagOn(env.AI_GATEWAY_FALLBACK_PRIVATE_DATA_ATTESTED),
+  };
+  const raw = (env.AI_GATEWAY_PRIVATE_ROUTES_JSON || '').trim();
+  if (!raw) return { ...base, state: 'unset', routes: new Map() };
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object');
+    const routes = new Map<string, Set<string>>();
+    for (const [subject, list] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!PRIVATE_SUBJECT.test(subject) || !Array.isArray(list) || list.length > 64) throw new Error('bad entry');
+      if (list.some((route) => typeof route !== 'string' || !PRIVATE_ROUTE.test(route))) throw new Error('bad route');
+      routes.set(subject, new Set(list as string[]));
+    }
+    return { ...base, state: 'ok', routes };
+  } catch {
+    return { ...base, state: 'invalid', routes: new Map() };
+  }
+}
+
+function privateAllowed(config: PrivateRouteConfig, subject: string | undefined, route: string): boolean {
+  return config.state === 'ok' && config.providerAttested && typeof subject === 'string'
+    && Boolean(config.routes.get(subject)?.has(route));
+}
+
+function validateRequest(input: unknown, config: GatewayConfig, allowPrivate: (route: string) => boolean = () => false): ValidatedRequest {
   if (!input || typeof input !== 'object') throw new AiGatewayError(400, 'Request body must be a JSON object');
   try {
-    return validateRequestBody(input as Record<string, unknown>, config);
+    return validateRequestBody(input as Record<string, unknown>, config, allowPrivate);
   } catch (error) {
     if (error instanceof InvalidAiRequest) throw new AiGatewayError(400, error.message);
     throw error;
   }
 }
 
-function validateRequestBody(value: Record<string, unknown>, config: GatewayConfig): ValidatedRequest {
+function validateRequestBody(value: Record<string, unknown>, config: GatewayConfig, allowPrivate: (route: string) => boolean): ValidatedRequest {
   const route = typeof value.route === 'string' ? value.route.trim() : '';
   const promptVersion = typeof value.prompt_version === 'string' ? value.prompt_version.trim() : '';
   if (!/^[A-Za-z0-9_.:/-]{1,64}$/.test(route)) throw new AiGatewayError(400, 'route is required and must be a safe identifier');
@@ -474,7 +521,7 @@ function validateRequestBody(value: Record<string, unknown>, config: GatewayConf
   if (!PROFILES.has(profile)) throw new AiGatewayError(400, 'profile must be fast, balanced, or quality');
   const privacyClass = (typeof value.privacy_class === 'string' ? value.privacy_class : 'internal') as AiPrivacyClass;
   if (!PRIVACY_CLASSES.has(privacyClass)) throw new AiGatewayError(400, 'privacy_class is invalid');
-  if (privacyClass === 'private' || privacyClass === 'restricted') {
+  if (privacyClass === 'restricted' || (privacyClass === 'private' && !allowPrivate(route))) {
     throw new AiGatewayError(403, 'Hosted AI generation is disabled for private or restricted data');
   }
 
@@ -722,9 +769,13 @@ export async function generateAi(input: unknown, env: NodeJS.ProcessEnv = proces
     const message = error instanceof AiGatewayError ? error.message : 'AI gateway configuration is invalid';
     throw new AiGatewayError(503, message, telemetryForError(runId, { route: 'unknown', prompt_version: 'unknown', tokenBudget: 0 }, null, null, performance.now() - started, 'error', 'not_configured'));
   }
-  const request = validateRequest(input, config);
+  const privateRoutes = readPrivateRoutes(env);
+  const request = validateRequest(input, config, (route) => privateAllowed(privateRoutes, options.subject, route));
   const primaryModel = config.models[request.profile];
-  const fallbackModel = config.fallbackModels[request.profile];
+  // Private data goes to a fallback model only when the owner attested that provider too.
+  const fallbackModel = request.privacyClass === 'private' && !privateRoutes.fallbackAttested
+    ? null
+    : config.fallbackModels[request.profile];
   // Byte count provides a conservative text-token allowance, including Thai;
   // chars / 4 is only a heuristic and must not be used as a cost ceiling.
   // Tools, tool history, the JSON schema and images are billed as input too.
