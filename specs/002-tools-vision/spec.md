@@ -132,7 +132,7 @@ All tests are `node:test` under `tsx` with a fake `fetch`; no network.
 
 ### AC-10 — Provider tool calls are bounded
 
-- **When** the provider returns more than 16 tool calls, a call with arguments over 16 KB, a tool name not in the request, a missing call id, or `finish_reason: "length"` together with `tool_calls` (truncated arguments)
+- **When** the provider returns more than 16 tool calls, a call with arguments over 16 KB, text plus tool-call names and arguments over the request's bounded output allowance (`max(1 KB, max_output_tokens × 16)` bytes), a tool name not in the request, a missing call id, or `finish_reason: "length"` together with `tool_calls` (truncated arguments)
 - **Then** the reply is a 502 `invalid_response` and nothing partial is returned
 - **Test:** `tests/ai_gateway_tools.test.ts > "rejects unbounded provider tool calls"` · level: unit
 
@@ -213,6 +213,7 @@ added when the branch is pushed.
 | AC-08 (DoD review fix) | `ai_gateway_service > "SPEC-002 AC-08 subject budgets require the bounded error cost policy…"` | f87cdf7 · `no problem reported` | b663e48 | none |
 | AC-08 | `ai_budget > "subject budget …"` (4), `ai_gateway_service > "SPEC-002 AC-08 …"` | 34cd5ee · `TS2554 expected 1-2 arguments` / second request 200 instead of 429 | 907c5de | none |
 | AC-09 | `ai_gateway_vision > "AC-09 telemetry holds counts only"`, `sentry > "SPEC-002 AC-09 scrubs image and tool payloads"` | 3868f6e · request rejected (no image support); 34cd5ee · `data:image… not scrubbed` | 2222435, 907c5de | none |
+| AC-10 (Codex fix) | `ai_gateway_tools > "AC-10 tool call arguments count toward the response output limit"` | befdc07 · `Missing expected rejection` | 431edb5 | none |
 | AC-10 | `ai_gateway_tools > "AC-10 …"` (2) | f022bcc · passed on red for the wrong reason (null content → 502); meaningful after green | 2222435 | none |
 | AC-11 | `ai_gateway_tools > "AC-11 falls back with tools and images"`, `"…same timeout as the primary…"` | f022bcc · request rejected (no tools/images); timeout test cd8f03f is a characterization test of existing behaviour | 2222435, cd8f03f | none |
 | AC-12 | `ai_gateway_service > "SPEC-002 AC-12 status advertises capabilities"`, `ai_gateway_mcp > "SPEC-002 AC-12 …"` | 34cd5ee · `capabilities undefined`; the MCP test first failed on a test bug (wrong JSON level), fixed before green; MCP already passes fields through | 907c5de | none |
