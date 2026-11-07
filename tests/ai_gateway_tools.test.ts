@@ -293,3 +293,18 @@ test('AC-03 an assistant tool-call message may omit content; it is forwarded as 
     provider.restore();
   }
 });
+
+test('AC-10 tool call arguments count toward the response output limit', async () => {
+  // max_output_tokens 64 → the bounded response allowance is 1,024 bytes.
+  const provider = fakeProvider(() => providerToolCalls([{ id: 'c1', name: 'record_bill', arguments: `{"note":"${'x'.repeat(2_000)}"}` }]));
+  try {
+    await assert.rejects(() => generateAi({ ...base, max_output_tokens: 64, messages: [userTurn], tools: [RECORD_TOOL] }, configuredEnv()), (error: unknown) => {
+      assert.ok(error instanceof AiGatewayError);
+      assert.equal(error.status, 502);
+      assert.equal(error.telemetry?.metadata.error_class, 'invalid_response');
+      return true;
+    });
+  } finally {
+    provider.restore();
+  }
+});
