@@ -450,7 +450,7 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
     try {
       return sendJson(res, 200, {
         contract: AI_GATEWAY_CONTRACT,
-        ...getAiUsageReport(store.db, { period, now, caller: admin ? undefined : { subject: result.subject, workspace: result.workspace } }),
+        ...getAiUsageReport(store.db, { period, now, view: admin ? { kind: 'admin' } : { kind: 'self', subject: result.subject, workspace: result.workspace } }),
       });
     } catch (error) {
       captureError(error);

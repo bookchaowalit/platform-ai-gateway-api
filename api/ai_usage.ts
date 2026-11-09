@@ -61,11 +61,13 @@ export interface UsageCaller {
   workspace?: string;
 }
 
+/** Explicit view: the all-subjects report is never implied by a missing caller. */
+export type UsageView = { kind: 'admin' } | ({ kind: 'self' } & UsageCaller);
+
 export interface UsageReportOptions {
   period: string;
   now?: Date;
-  /** Omitted: admin view of every subject. Given: only this subject (and workspace). */
-  caller?: UsageCaller;
+  view: UsageView;
 }
 
 const pad = (value: number) => String(value).padStart(2, '0');
@@ -168,21 +170,29 @@ function buildWindow(db: DatabaseSync, start: Date, end: Date, caller: UsageCall
 /** Throws on a store error; callers answer 503 rather than a partial report. */
 export function getAiUsageReport(db: DatabaseSync, options: UsageReportOptions): AiUsageReport {
   const now = options.now ?? new Date();
+  const { view } = options;
+  let caller: UsageCaller | undefined;
+  if (view?.kind === 'self') {
+    if (typeof view.subject !== 'string' || view.subject === '') throw new Error('usage self view needs a subject');
+    caller = { subject: view.subject, workspace: view.workspace };
+  } else if (view?.kind !== 'admin') {
+    throw new Error('usage view must be admin or self');
+  }
   const match = PERIOD.exec(options.period);
   if (!match) throw new Error('invalid usage period');
   const year = Number(match[1]);
   const month = Number(match[2]) - 1;
-  const monthWindow = buildWindow(db, new Date(Date.UTC(year, month, 1)), new Date(Date.UTC(year, month + 1, 1)), options.caller);
+  const monthWindow = buildWindow(db, new Date(Date.UTC(year, month, 1)), new Date(Date.UTC(year, month + 1, 1)), caller);
   const isCurrent = options.period === monthOf(now);
   const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const dayEnd = new Date(dayStart.getTime() + 86_400_000);
   return {
     report: AI_USAGE_REPORT,
-    view: options.caller ? 'self' : 'all',
+    view: caller ? 'self' : 'all',
     period: options.period,
     timezone: 'UTC',
     generated_at: now.toISOString(),
     month: monthWindow,
-    today: isCurrent ? buildWindow(db, dayStart, dayEnd, options.caller) : null,
+    today: isCurrent ? buildWindow(db, dayStart, dayEnd, caller) : null,
   };
 }

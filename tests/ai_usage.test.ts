@@ -59,7 +59,7 @@ const NOW = new Date('2026-11-09T12:00:00Z');
 test('AC-01 aggregates per subject and route for the month', () => {
   const store = fixture();
   try {
-    const report = asAny(getAiUsageReport(store.db, { period: '2026-11', now: NOW }));
+    const report = asAny(getAiUsageReport(store.db, { period: '2026-11', now: NOW, view: { kind: 'admin' } }));
     assert.equal(report.view, 'all');
     assert.equal(report.period, '2026-11');
     assert.equal(report.timezone, 'UTC');
@@ -101,13 +101,13 @@ test('AC-01 aggregates per subject and route for the month', () => {
 test('AC-02 reports today separately and only for the current month', () => {
   const store = fixture();
   try {
-    const report = asAny(getAiUsageReport(store.db, { period: '2026-11', now: NOW }));
+    const report = asAny(getAiUsageReport(store.db, { period: '2026-11', now: NOW, view: { kind: 'admin' } }));
     assert.equal(report.today.from, '2026-11-09T00:00:00Z');
     assert.equal(report.today.to, '2026-11-10T00:00:00Z');
     assert.equal(report.today.totals.calls, 2);
     assert.deepEqual(report.today.subjects.map((s: any) => [s.subject, s.calls, s.errors]), [['client-a', 1, 0], ['client-b', 1, 1]]);
 
-    const past = asAny(getAiUsageReport(store.db, { period: '2026-10', now: NOW }));
+    const past = asAny(getAiUsageReport(store.db, { period: '2026-10', now: NOW, view: { kind: 'admin' } }));
     assert.equal(past.today, null);
     assert.equal(past.month.totals.calls, 1);
     assert.equal(past.month.totals.cost_usd, 9);
@@ -120,16 +120,16 @@ test('AC-04 self view returns only the caller subject and workspace, without sha
   const store = fixture();
   insert(store, { subject: 'client-a', workspace: 'ws-1', route: 'chat', cost: 1, at: '2026-11-07 10:00:00' });
   try {
-    const report = asAny(getAiUsageReport(store.db, { period: '2026-11', now: NOW, caller: { subject: 'client-a' } }));
+    const report = asAny(getAiUsageReport(store.db, { period: '2026-11', now: NOW, view: { kind: 'self', subject: 'client-a' } }));
     assert.equal(report.view, 'self');
     assert.deepEqual(report.month.subjects.map((s: any) => [s.subject, s.workspace_id]), [['client-a', null]]);
     assert.equal(report.month.totals.calls, 4);
     assert.equal(report.month.subjects[0].cost_share, undefined);
 
-    const ws = asAny(getAiUsageReport(store.db, { period: '2026-11', now: NOW, caller: { subject: 'client-a', workspace: 'ws-1' } }));
+    const ws = asAny(getAiUsageReport(store.db, { period: '2026-11', now: NOW, view: { kind: 'self', subject: 'client-a', workspace: 'ws-1' } }));
     assert.deepEqual(ws.month.subjects.map((s: any) => [s.subject, s.workspace_id, s.calls]), [['client-a', 'ws-1', 1]]);
 
-    const nobody = asAny(getAiUsageReport(store.db, { period: '2026-11', now: NOW, caller: { subject: 'client-z' } }));
+    const nobody = asAny(getAiUsageReport(store.db, { period: '2026-11', now: NOW, view: { kind: 'self', subject: 'client-z' } }));
     assert.deepEqual(nobody.month.subjects, []);
     assert.equal(nobody.month.totals.calls, 0);
     assert.equal(nobody.month.totals.cost_usd, 0);
@@ -151,10 +151,21 @@ test('AC-05 period defaults to the current UTC month and rejects malformed or fu
 test('AC-06 report rows carry only subject, workspace, route and counters', () => {
   const store = fixture();
   try {
-    const text = JSON.stringify(getAiUsageReport(store.db, { period: '2026-11', now: NOW }));
+    const text = JSON.stringify(getAiUsageReport(store.db, { period: '2026-11', now: NOW, view: { kind: 'admin' } }));
     assert.ok(!text.includes('prompt_marker_should_never_leak'));
     assert.ok(!text.includes('run-'));
     assert.ok(!text.includes('metadata'));
+  } finally {
+    store.close();
+  }
+});
+
+test('AC-03 the admin view is never implied: a missing view or an empty subject fails closed', () => {
+  const store = fixture();
+  try {
+    assert.throws(() => getAiUsageReport(store.db, asAny({ period: '2026-11', now: NOW })), /admin or self/);
+    assert.throws(() => getAiUsageReport(store.db, asAny({ period: '2026-11', now: NOW, view: { kind: 'all' } })), /admin or self/);
+    assert.throws(() => getAiUsageReport(store.db, { period: '2026-11', now: NOW, view: { kind: 'self', subject: '' } }), /needs a subject/);
   } finally {
     store.close();
   }

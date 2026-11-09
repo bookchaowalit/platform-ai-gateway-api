@@ -7,7 +7,7 @@ Standard: ADR-0004 — TDD + SDD (architecture-docs, `docs/architecture/decision
 | Field | Value |
 |---|---|
 | Spec ID / version | SPEC-003 / 1.0 |
-| Status | implemented on branch `feat/per-subject-usage`, awaiting review and merge; local green: `npm test` 147 pass, 1 skipped (as before), `npm run typecheck` and `npm run build` pass |
+| Status | implemented on branch `feat/per-subject-usage`, awaiting review and merge; local green: `npm test` 148 pass, 1 skipped (as before), `npm run typecheck` and `npm run build` pass |
 | Repository / path | bookchaowalit/platform-ai-gateway-api / `specs/003-subject-usage/spec.md` |
 | Owner (maker) | Claude Code |
 | Reviewer (checker) | PR review plus Codex review at Stop |
@@ -140,3 +140,4 @@ All tests are `node:test` under `tsx`, with an in-memory SQLite telemetry store;
 | Version | Date | Change | Scenarios affected | Approved by |
 |---|---|---|---|---|
 | 1.0 | 2026-11-09 | First version; implemented | all | pending owner review on the PR |
+| 1.1 | 2026-11-09 | Security review: the report takes an explicit `view` (`admin` or `self` with a non-empty subject) and throws otherwise, so a missing caller can never fall open to the all-subjects view; test `ai_usage > "AC-03 the admin view is never implied…"` | AC-03 | tighter, no new scope |
