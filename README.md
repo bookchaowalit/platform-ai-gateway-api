@@ -98,6 +98,23 @@ process restarts, as the global guard always did. The `response_format` 400 mess
 `GET /api/ai/status` reports `capabilities` (tools, image input, json_schema, the caller's private route count and
 whether that config parsed) and the image limits.
 
+## Per-subject usage (SPEC-003)
+
+Every system shares one provider key, so usage is split by gateway token subject. `GET /api/ai/usage?period=YYYY-MM`
+(scope `api:read`; `period` defaults to the current UTC month) returns, for the month and for today (UTC), per subject
+and per route: `calls`, `success`, `errors`, `budget_denied`, `input_tokens`, `output_tokens`, `total_tokens`,
+`cost_usd` (the gateway's rate-card estimate, as the budget guard uses) and `unknown_cost_calls`. No prompts, outputs,
+run ids or raw metadata are returned.
+
+- A scoped static token with the literal `ai:usage` scope (next to `api:read`) gets `view: "all"` with every subject and
+  its `cost_share`. JWT callers never get the all view, whatever scopes they carry.
+- Every other caller gets `view: "self"`: its own subject (and workspace) only.
+- Systems that call the provider directly with the same key (for example meeting-minutes) are not in this report.
+
+```bash
+curl -s -H "Authorization: Bearer $AI_GATEWAY_USAGE_TOKEN" "https://<gateway>/api/ai/usage?period=2026-11"
+```
+
 ## Staged shared admission
 
 The default production behavior remains unchanged. Explicit workspace JWT and

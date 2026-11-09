@@ -4,6 +4,7 @@
  * Exposes only:
  *   GET  /healthz          no auth, no configuration detail
  *   GET  /api/ai/status    scope api:read
+ *   GET  /api/ai/usage     scope api:read; all subjects only with a literal ai:usage scope (SPEC-003)
  *   POST /api/ai/generate  scope ai:generate
  *   POST /api/media/route  scope ai:generate (metadata-only transcription routing)
  *
@@ -23,6 +24,7 @@ import { AiBudgetError, createAiBudgetGuard, getAiBudgetStatus, subjectBudgetCon
 import { aiRateLimitHeaders, createAiRateLimiter, type AiRateLimiter } from '../ai_rate_limit.js';
 import { createScopedTokenAuthenticator, type AuthResult } from '../auth.js';
 import { decideMediaRoute, MediaRouteError, parseMediaRouteInput } from '../media_router.js';
+import { AI_USAGE_ADMIN_SCOPE, getAiUsageReport, parseUsagePeriod } from '../ai_usage.js';
 import { captureError } from './sentry.js';
 import type { TelemetryStore } from './store.js';
 import { createWorkspaceJwtAuthenticator, type WorkspaceAuthResult } from '../workspace_auth.js';
@@ -414,6 +416,11 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
       });
     }
 
+    if (path === '/api/ai/usage') {
+      if (method !== 'GET') return sendError(res, 405, 'Method Not Allowed', 'method_not_allowed', { Allow: 'GET' });
+      return handleUsage(req, res);
+    }
+
     if (path === '/api/ai/generate') {
       if (method !== 'POST') return sendError(res, 405, 'Method Not Allowed', 'method_not_allowed', { Allow: 'POST' });
       return handleGenerate(req, res);
@@ -425,6 +432,30 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
     }
 
     return sendError(res, 404, 'Not Found', 'not_found');
+  }
+
+  /**
+   * SPEC-003 usage report. The all-subjects view needs the literal ai:usage scope on a scoped
+   * static token without workspace: a wildcard token or a JWT scope never widens visibility.
+   */
+  async function handleUsage(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const result: WorkspaceAuthResult = await auth.authenticate(req, 'api:read');
+    if (!result.authorized || !['scoped', 'workspace-jwt', 'identity-jwt'].includes(result.method) || !result.subject) {
+      return authFailure(res, result.authorized ? { ...result, authorized: false, status: 401 } : result);
+    }
+    const now = new Date();
+    const period = parseUsagePeriod(new URL(req.url || '/', 'http://gateway.invalid').searchParams.get('period'), now);
+    if (!period) return sendError(res, 400, 'period must be YYYY-MM and not after the current UTC month', 'invalid_period');
+    const admin = result.method === 'scoped' && !result.workspace && result.scopes.includes(AI_USAGE_ADMIN_SCOPE);
+    try {
+      return sendJson(res, 200, {
+        contract: AI_GATEWAY_CONTRACT,
+        ...getAiUsageReport(store.db, { period, now, caller: admin ? undefined : { subject: result.subject, workspace: result.workspace } }),
+      });
+    } catch (error) {
+      captureError(error);
+      return sendError(res, 503, 'AI usage report is unavailable', 'usage_unavailable');
+    }
   }
 
   async function handleMediaRoute(req: IncomingMessage, res: ServerResponse): Promise<void> {
