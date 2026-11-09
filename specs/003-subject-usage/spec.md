@@ -7,7 +7,7 @@ Standard: ADR-0004 — TDD + SDD (architecture-docs, `docs/architecture/decision
 | Field | Value |
 |---|---|
 | Spec ID / version | SPEC-003 / 1.0 |
-| Status | implemented on branch `feat/per-subject-usage`, awaiting review and merge |
+| Status | implemented on branch `feat/per-subject-usage`, awaiting review and merge; local green: `npm test` 147 pass, 1 skipped (as before), `npm run typecheck` and `npm run build` pass |
 | Repository / path | bookchaowalit/platform-ai-gateway-api / `specs/003-subject-usage/spec.md` |
 | Owner (maker) | Claude Code |
 | Reviewer (checker) | PR review plus Codex review at Stop |
@@ -124,8 +124,8 @@ All tests are `node:test` under `tsx`, with an in-memory SQLite telemetry store;
 
 | Scenario | Test | Red: commit + failure | Green: commit | Refactor note |
 |---|---|---|---|---|
-| AC-01, 02, 04, 05, 06 (unit) | `tests/ai_usage.test.ts` (5) | red commit · `ERR_MODULE_NOT_FOUND: Cannot find module '../api/ai_usage.js'` | green commit | the AC-01 share tolerance was widened to 1e-3 because shares are rounded to 4 decimals (test bug, not behaviour) |
-| AC-03–06 (integration) | `tests/ai_gateway_service.test.ts > "SPEC-003 …"` (3) | red commit · `404 !== 200` against the pre-change `service.ts` | green commit | a planned wildcard-token case was dropped: `API_TOKENS_JSON` refuses a `*` scope, so it cannot be configured |
+| AC-01, 02, 04, 05, 06 (unit) | `tests/ai_usage.test.ts` (5) | ef5eb97 · `ERR_MODULE_NOT_FOUND: Cannot find module '../api/ai_usage.js'` | ae3b00c | the AC-01 share tolerance was widened to 1e-3 because shares are rounded to 4 decimals (test bug, not behaviour) |
+| AC-03–06 (integration) | `tests/ai_gateway_service.test.ts > "SPEC-003 …"` (3) | ef5eb97 · `404 !== 200` against the pre-change `service.ts` | ae3b00c | a planned wildcard-token case was dropped: `API_TOKENS_JSON` refuses a `*` scope, so it cannot be configured |
 
 ## 7. Risks and open questions
 
