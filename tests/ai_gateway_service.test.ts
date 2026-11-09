@@ -732,3 +732,108 @@ test('SPEC-002 AC-08 subject budgets require the bounded error cost policy and v
   assert.ok(serviceConfigurationProblems({ ...env, AI_GATEWAY_ERROR_COST_POLICY: 'bounded', AI_GATEWAY_SUBJECT_BUDGETS_JSON: '{bad' })
     .some((p) => /AI_GATEWAY_SUBJECT_BUDGETS_JSON/.test(p)));
 });
+
+// ---- SPEC-003 per-subject usage report ----------------------------------------------------------
+
+const USAGE_ADMIN_TOKEN = randomBytes(24).toString('base64url');
+const USAGE_TOKENS_JSON = JSON.stringify([
+  ...JSON.parse(TOKENS_JSON),
+  { subject: 'owner-usage', token_hash: sha256(USAGE_ADMIN_TOKEN), scopes: ['api:read', 'ai:usage'] },
+]);
+
+function usage(url: string, token: string | null, query = '', method = 'GET') {
+  return fetch(`${url}/api/ai/usage${query}`, { method, headers: token ? { Authorization: `Bearer ${token}` } : {} });
+}
+
+test('SPEC-003 AC-03 AC-04 AC-06 usage report: admin sees all subjects, others only their own, no content', async () => {
+  const upstream = await startUpstream((body, res) => json(res, 200, okCompletion(body.model)));
+  const gateway = await startGateway(gatewayEnv(upstream.url, { API_TOKENS_JSON: USAGE_TOKENS_JSON }));
+  try {
+    assert.equal((await post(gateway.url, GENERATE_TOKEN, baseRequest)).status, 200);
+    assert.equal((await post(gateway.url, GENERATE_TOKEN, { ...baseRequest, route: 'ev3-summary' })).status, 200);
+    assert.equal((await post(gateway.url, BOTH_TOKEN, baseRequest)).status, 200);
+
+    // AC-03: explicit ai:usage on a static token gives the all-subjects view.
+    const admin = await usage(gateway.url, USAGE_ADMIN_TOKEN);
+    assert.equal(admin.status, 200);
+    assert.equal(admin.headers.get('cache-control'), 'no-store');
+    const adminText = await admin.text();
+    const report = asAny(JSON.parse(adminText));
+    assert.equal(report.report, 'ai-gateway.usage.v1');
+    assert.equal(report.view, 'all');
+    assert.equal(report.period, new Date().toISOString().slice(0, 7));
+    assert.deepEqual(report.month.subjects.map((s: any) => s.subject).sort(), ['ev3-full', 'ev3-web']);
+    const web = report.month.subjects.find((s: any) => s.subject === 'ev3-web');
+    assert.equal(web.calls, 2);
+    assert.equal(web.input_tokens, 80);
+    assert.equal(web.output_tokens, 16);
+    assert.deepEqual(web.routes.map((r: any) => r.route).sort(), ['ev3-chat', 'ev3-summary']);
+    assert.equal(typeof web.cost_share, 'number');
+    assert.equal(report.today.totals.calls, 3);
+
+    // AC-06: no prompt, output, provider key, run id or raw metadata.
+    for (const secret of [PROMPT_MARKER, OUTPUT_MARKER, UPSTREAM_KEY, 'run_id', 'metadata_json', 'prompt_version']) {
+      assert.ok(!adminText.includes(secret), secret);
+    }
+
+    // AC-04: api:read callers see only their own subject.
+    const own = asAny(await (await usage(gateway.url, BOTH_TOKEN)).json());
+    assert.equal(own.view, 'self');
+    assert.deepEqual(own.month.subjects.map((s: any) => s.subject), ['ev3-full']);
+    assert.equal(own.month.subjects[0].cost_share, undefined);
+    assert.equal(own.month.totals.calls, 1);
+    const reader = asAny(await (await usage(gateway.url, READ_TOKEN)).json());
+    assert.deepEqual(reader.month.subjects, []);
+
+    // AC-04: no api:read → refused like /api/ai/status.
+    assert.equal((await usage(gateway.url, GENERATE_TOKEN)).status, 403);
+    assert.equal((await usage(gateway.url, null)).status, 401);
+  } finally {
+    await gateway.stop();
+    await close(upstream.server);
+  }
+});
+
+test('SPEC-003 AC-05 usage report validates period and method', async () => {
+  const gateway = await startGateway(gatewayEnv('http://127.0.0.1:9', { API_TOKENS_JSON: USAGE_TOKENS_JSON }));
+  try {
+    const bad = await usage(gateway.url, USAGE_ADMIN_TOKEN, '?period=2026-13');
+    assert.equal(bad.status, 400);
+    assert.equal((await bad.json().then(asAny)).code, 'invalid_period');
+    assert.equal((await usage(gateway.url, USAGE_ADMIN_TOKEN, '?period=2999-01')).status, 400);
+    const past = asAny(await (await usage(gateway.url, USAGE_ADMIN_TOKEN, '?period=2026-01')).json());
+    assert.equal(past.period, '2026-01');
+    assert.equal(past.today, null);
+    const post405 = await usage(gateway.url, USAGE_ADMIN_TOKEN, '', 'POST');
+    assert.equal(post405.status, 405);
+    assert.equal(post405.headers.get('allow'), 'GET');
+  } finally {
+    await gateway.stop();
+  }
+});
+
+test('SPEC-003 AC-03 an identity JWT with an ai:usage scope still gets only its own subject', async () => {
+  const issuer = 'https://identity.example.test';
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const keys = createLocalJWKSet({ keys: [{ ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256' }] });
+  const now = Math.floor(Date.now() / 1000);
+  const token = await new SignJWT({ ws: randomUUID(), scope: 'ai:read ai:usage', jti: randomUUID() })
+    .setProtectedHeader({ alg: 'RS256', kid: 'k1' }).setIssuer(issuer).setAudience('ai-api').setSubject(randomUUID())
+    .setIssuedAt(now).setExpirationTime(now + 900).sign(privateKey);
+  const upstream = await startUpstream((body, res) => json(res, 200, okCompletion(body.model)));
+  const gateway = await startGateway(gatewayEnv(upstream.url, {
+    API_TOKENS_JSON: USAGE_TOKENS_JSON, AI_GATEWAY_AUTH_PROFILE: 'identity', AI_GATEWAY_IDENTITY_ISSUER: issuer,
+  }), ':memory:', keys);
+  try {
+    assert.equal((await post(gateway.url, GENERATE_TOKEN, baseRequest)).status, 200);
+    const own = asAny(await (await usage(gateway.url, token)).json());
+    assert.equal(own.view, 'self');
+    assert.deepEqual(own.month.subjects, []);
+    const admin = asAny(await (await usage(gateway.url, USAGE_ADMIN_TOKEN)).json());
+    assert.equal(admin.view, 'all');
+    assert.deepEqual(admin.month.subjects.map((s: any) => s.subject), ['ev3-web']);
+  } finally {
+    await gateway.stop();
+    await close(upstream.server);
+  }
+});
