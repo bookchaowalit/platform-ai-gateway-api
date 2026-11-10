@@ -74,7 +74,7 @@ edge gateway `gateway.bookchaowalit.com` ไม่อยู่ใน path ขอ
 | Runtime | Node ≥ 22.13, `node:http`, `node:sqlite`, `jose` (JWT/JWKS), `zod`, MCP SDK |
 | Build | TypeScript 7, esbuild bundle, Docker `node:22-slim` 2-stage |
 | Test | `node:test` ผ่าน `tsx --test` (ไม่มี coverage report) |
-| Deploy | Railway (`railway.json`: healthcheck `/healthz` 60 s, restart ON_FAILURE ×10) |
+| Deploy | Railway (`.railway/railway.ts`: healthcheck `/healthz` 60 s, restart ON_FAILURE ×10) |
 | CI | `platform-ci-workflows` v1.1.1 `ci-node.yml` + `security.yml`; `shared-runtime.yml` (postgres:16 + platform-data) |
 
 ## 6. Data stores
@@ -183,7 +183,7 @@ tier ของ pack นี้คือ L0 จึงยังไม่บัง�
 
 อ่านที่ `origin/main` `efe8fa9` (2026-11-04):
 
-- `README.md`, `PRODUCT.md`, `AGENTS.md`, `package.json`, `railway.json`, `Dockerfile`
+- `README.md`, `PRODUCT.md`, `AGENTS.md`, `package.json`, `.railway/railway.ts`, `Dockerfile`
 - `api/ai-gateway-service/service.ts`, `api/identity_auth.ts`, `api/ai_gateway.ts`, รายชื่อ `api/*.ts`
 - `docs/identity-tokens.md`, `docs/shared-admission.md`
 - `docs/diagrams/*` (Core 22 pack ที่ `b8141c9`), `docs/diagrams/08-adr/*`

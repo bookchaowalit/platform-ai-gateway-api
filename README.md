@@ -22,7 +22,7 @@ api/                     gateway modules (routing, budget, rate limit, auth)
 api/ai-gateway-service/  HTTP service, telemetry store, entrypoint, build
 database/migrations/     telemetry schema
 tests/                   node:test suites, *.test.ts (run with tsx)
-Dockerfile, railway.json build and deploy config (repository root is the context)
+Dockerfile, .railway/railway.ts build and deploy config (repository root is the context)
 ```
 
 ## Develop

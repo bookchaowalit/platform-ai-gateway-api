@@ -27,7 +27,7 @@ flowchart TD
 
 หลักฐาน gate: deployment `77e8d12` (CI failure: osv-scanner 1 High, trivy-fs) เป็น `in_progress → inactive` ไม่เคย success; PR #7 (`a9843e8`) แก้แล้ว deploy success 2026-10-26 12:05:57Z
 
-Sources: `.github/workflows/ci.yml`, `.github/workflows/shared-runtime.yml`, `railway.json`, `Dockerfile`, `README.md`, `gh run list -R bookchaowalit/platform-ai-gateway-api --branch main`, `gh run view` (failed run of `77e8d12`: jobs `security / osv-scanner` and `security / trivy-fs` failure), `gh api repos/bookchaowalit/platform-ai-gateway-api/deployments` + statuses
+Sources: `.github/workflows/ci.yml`, `.github/workflows/shared-runtime.yml`, `.railway/railway.ts`, `Dockerfile`, `README.md`, `gh run list -R bookchaowalit/platform-ai-gateway-api --branch main`, `gh run view` (failed run of `77e8d12`: jobs `security / osv-scanner` and `security / trivy-fs` failure), `gh api repos/bookchaowalit/platform-ai-gateway-api/deployments` + statuses
 
 ## Open questions
 

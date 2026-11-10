@@ -24,7 +24,7 @@ C4Container
   Rel(svc, idn, "fetch JWKS, identity profile only")
 ```
 
-Sources: `Dockerfile`, `railway.json`, `api/ai-gateway-service/main.ts`, `api/ai-gateway-service/store.ts`, `api/ai-gateway-service/package.json`, `mcp/ai-gateway-mcp.ts`, `mcp/bin.mjs`, `.mcp.json`, `README.md`, `api/identity_auth.ts` (2026-11-04)
+Sources: `Dockerfile`, `.railway/railway.ts`, `api/ai-gateway-service/main.ts`, `api/ai-gateway-service/store.ts`, `api/ai-gateway-service/package.json`, `mcp/ai-gateway-mcp.ts`, `mcp/bin.mjs`, `.mcp.json`, `README.md`, `api/identity_auth.ts` (2026-11-04)
 
 ## Open questions
 

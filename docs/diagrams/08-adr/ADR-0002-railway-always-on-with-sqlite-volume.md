@@ -12,7 +12,7 @@ budget guard ต้องรู้ spend เดือนนี้ข้าม re
 
 ## Evidence
 
-- `railway.json`, `Dockerfile`, `api/ai-gateway-service/entrypoint.sh`
+- `.railway/railway.ts`, `Dockerfile`, `api/ai-gateway-service/entrypoint.sh`
 - `api/ai-gateway-service/store.ts` (comment "keeping the file on a persistent volume keeps the cap effective")
 - `tests/ai_gateway_service.test.ts` ("monthly budget spend persists across a service restart on the same volume")
 - `README.md` (Host, Data)

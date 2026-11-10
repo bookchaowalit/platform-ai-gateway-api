@@ -23,7 +23,7 @@ flowchart LR
 
 ไม่พบ: dashboard, alert บน budget/429/502 rate, หรือ metric exporter
 
-Sources: `api/ai-gateway-service/main.ts`, `service.ts`, `sentry.ts`, `store.ts`, `mcp/ai-gateway-mcp.ts`, `railway.json`, `PRODUCT.md`, `platform-uptime-worker/src/targets.ts`, `platform-uptime-worker/README.md`
+Sources: `api/ai-gateway-service/main.ts`, `service.ts`, `sentry.ts`, `store.ts`, `mcp/ai-gateway-mcp.ts`, `.railway/railway.ts`, `PRODUCT.md`, `platform-uptime-worker/src/targets.ts`, `platform-uptime-worker/README.md`
 
 ## Open questions
 

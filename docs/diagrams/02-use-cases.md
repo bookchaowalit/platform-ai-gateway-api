@@ -36,7 +36,7 @@ flowchart LR
 
 หมายเหตุ scope: `api:write` ครอบ `api:read` `scopeAllows` ใน `api/auth.ts` มีเงื่อนไข `*` แต่ตั้งค่าไม่ได้จริง เพราะ `SCOPE_PATTERN` ปฏิเสธ `*` ตอน parse `API_TOKENS_JSON`; `/api/media/route` ใช้ scope `ai:generate` เหมือน generate; MCP server เรียกได้แค่ `GET /api/ai/status` (สาม tool `ai_gateway.status`, `ai_gateway.budget`, `ai_gateway.rate_limit`)
 
-Sources: `api/auth.ts`, `api/workspace_auth.ts`, `api/ai_shared_admission.ts`, `api/ai-gateway-service/service.ts`, `mcp/ai-gateway-mcp.ts`, `railway.json`, `README.md`
+Sources: `api/auth.ts`, `api/workspace_auth.ts`, `api/ai_shared_admission.ts`, `api/ai-gateway-service/service.ts`, `mcp/ai-gateway-mcp.ts`, `.railway/railway.ts`, `README.md`
 
 ## Open questions
 

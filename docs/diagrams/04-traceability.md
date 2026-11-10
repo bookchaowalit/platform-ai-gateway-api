@@ -4,7 +4,7 @@ requirement มาจาก `PRODUCT.md` (Capabilities and Constraints), `specs/
 
 | Req ID | Requirement (source) | Code module | Test file | Release / workflow |
 |---|---|---|---|---|
-| R-01 | `GET\|HEAD /healthz` ไม่ต้อง auth, 503 เมื่อ store ใช้ไม่ได้ (PRODUCT.md) | `api/ai-gateway-service/service.ts`, `store.ts` | `tests/ai_gateway_service.test.ts` ("healthz is unauthenticated…") | `ci.yml` gateway job; Railway healthcheck `/healthz` (`railway.json`) |
+| R-01 | `GET\|HEAD /healthz` ไม่ต้อง auth, 503 เมื่อ store ใช้ไม่ได้ (PRODUCT.md) | `api/ai-gateway-service/service.ts`, `store.ts` | `tests/ai_gateway_service.test.ts` ("healthz is unauthenticated…") | `ci.yml` gateway job; Railway healthcheck `/healthz` (`.railway/railway.ts`) |
 | R-02 | `GET /api/ai/status` scope `api:read`, ไม่เปิด provider key (PRODUCT.md) | `service.ts`, `api/ai_gateway.ts` `getAiGatewayStatus` | `tests/ai_gateway_service.test.ts`, `tests/ai_gateway.test.ts` ("status exposes only safe…") | `ci.yml` |
 | R-03 | `POST /api/ai/generate` scope `ai:generate`, profile fast/balanced/quality, Thai default (PRODUCT.md) | `api/ai_gateway.ts` `generateAi`, `validateRequest` | `tests/ai_gateway.test.ts`, `tests/ai_gateway_service.test.ts` | `ci.yml` |
 | R-04 | primary + fallback หนึ่งครั้ง (PRODUCT.md Positioning) | `api/ai_gateway.ts` | `tests/ai_gateway.test.ts` ("falls back once…"), `tests/ai_gateway_service.test.ts` ("fallback covers a primary timeout…") | `ci.yml` |
@@ -40,7 +40,7 @@ flowchart LR
   W1 --> D["Railway Wait for CI deploy"]
 ```
 
-Sources: `PRODUCT.md`, `specs/001-l2-baseline/spec.md`, `docs/shared-admission.md`, `api/*.ts`, `tests/*.ts`, `.github/workflows/ci.yml`, `.github/workflows/shared-runtime.yml`, `railway.json`
+Sources: `PRODUCT.md`, `specs/001-l2-baseline/spec.md`, `docs/shared-admission.md`, `api/*.ts`, `tests/*.ts`, `.github/workflows/ci.yml`, `.github/workflows/shared-runtime.yml`, `.railway/railway.ts`
 
 ## Open questions
 

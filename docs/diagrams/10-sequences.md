@@ -89,4 +89,4 @@ sequenceDiagram
   M-->>R: listen 0.0.0.0:PORT, healthcheck /healthz
 ```
 
-Sources: `api/ai-gateway-service/service.ts`, `api/ai_gateway.ts` (`generateAi`, `callProvider`), `api/ai_budget.ts`, `api/ai_rate_limit.ts`, `api/ai_shared_admission.ts`, `api/workspace_auth.ts`, `api/ai-gateway-service/main.ts`, `api/ai-gateway-service/entrypoint.sh`, `api/ai-gateway-service/store.ts`, `railway.json`
+Sources: `api/ai-gateway-service/service.ts`, `api/ai_gateway.ts` (`generateAi`, `callProvider`), `api/ai_budget.ts`, `api/ai_rate_limit.ts`, `api/ai_shared_admission.ts`, `api/workspace_auth.ts`, `api/ai-gateway-service/main.ts`, `api/ai-gateway-service/entrypoint.sh`, `api/ai-gateway-service/store.ts`, `.railway/railway.ts`

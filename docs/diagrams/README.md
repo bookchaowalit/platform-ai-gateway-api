@@ -7,11 +7,11 @@ repo นี้คือ **Central AI Gateway ที่ให้บริกา�
 | # | Item | Status | File | Sources read |
 |---|---|---|---|---|
 | 01 | Business process (As-Is / To-Be) | done | [01-business-process.md](01-business-process.md) | service.ts, ai_gateway.ts, auth.ts, ai_budget.ts, ai_rate_limit.ts, media_router.ts, docs/shared-admission.md, PRODUCT.md |
-| 02 | Use cases | done | [02-use-cases.md](02-use-cases.md) | auth.ts, workspace_auth.ts, service.ts, mcp/ai-gateway-mcp.ts, railway.json |
+| 02 | Use cases | done | [02-use-cases.md](02-use-cases.md) | auth.ts, workspace_auth.ts, service.ts, mcp/ai-gateway-mcp.ts, .railway/railway.ts |
 | 03 | User flows (server callers; no UI) | done | [03-user-flows.md](03-user-flows.md) | service.ts, ai_gateway.ts, media_router.ts, routing JSON, mcp |
 | 04 | Traceability (RTM) | done | [04-traceability.md](04-traceability.md) | PRODUCT.md, SPEC-001, shared-admission.md, api/, tests/, workflows |
 | 05 | C4 Context | done | [05-c4-context.md](05-c4-context.md) | README.md, service.ts, sentry.ts, uptime targets.ts, ops record |
-| 06 | C4 Container | done | [06-c4-container.md](06-c4-container.md) | Dockerfile, railway.json, main.ts, store.ts, mcp |
+| 06 | C4 Container | done | [06-c4-container.md](06-c4-container.md) | Dockerfile, .railway/railway.ts, main.ts, store.ts, mcp |
 | 07 | C4 Component | done | [07-c4-component.md](07-c4-component.md) | all `api/` modules |
 | 08 | ADRs (6; ADR-0006 added 2026-11-04 at `efe8fa9`) | done | [08-adr/](08-adr/) | README.md, service.ts, auth.ts, store.ts, entrypoint.sh, ci.yml, shared-admission.md, gh deployments |
 | 09 | ERD | done | [09-erd.md](09-erd.md) | 025_ai_run_telemetry.sql, store.ts, ai_gateway.ts |
@@ -20,8 +20,8 @@ repo นี้คือ **Central AI Gateway ที่ให้บริกา�
 | 12 | API and integrations | done (+ link to central doc) | [12-api-integration.md](12-api-integration.md) | service.ts, ai_gateway.ts, ai_rate_limit.ts, routing JSON, central-ai-gateway.md |
 | 13 | Threat model (DFD + STRIDE) | done | [13-threat-model.md](13-threat-model.md) | auth/workspace_auth, service.ts, sentry.ts, entrypoint.sh, workflows, gh branch protection |
 | 14 | Backup / DR | done (gap: no backup found) | [14-backup-dr.md](14-backup-dr.md) | store.ts, ai_budget.ts, product card, platform-db-backup README, ops record |
-| 15 | CI/CD pipeline | done | [15-cicd-pipeline.md](15-cicd-pipeline.md) | ci.yml, shared-runtime.yml, railway.json, gh run list/view, gh deployments |
-| 16 | Deployment | done | [16-deployment.md](16-deployment.md) | README.md, Dockerfile, railway.json, sentry.ts, gh deployments |
+| 15 | CI/CD pipeline | done | [15-cicd-pipeline.md](15-cicd-pipeline.md) | ci.yml, shared-runtime.yml, .railway/railway.ts, gh run list/view, gh deployments |
+| 16 | Deployment | done | [16-deployment.md](16-deployment.md) | README.md, Dockerfile, .railway/railway.ts, sentry.ts, gh deployments |
 | 17 | Test coverage matrix | done | [17-test-coverage-matrix.md](17-test-coverage-matrix.md) | tests/*.ts, fixture, package.json, workflows |
 | 18 | Git / release workflow | done | [18-git-release-workflow.md](18-git-release-workflow.md) | git log, gh pr list, gh deployments |
 | 19 | Service dependency map | done | [19-service-dependency-map.md](19-service-dependency-map.md) | api/, package.json files, workflows, ops records |

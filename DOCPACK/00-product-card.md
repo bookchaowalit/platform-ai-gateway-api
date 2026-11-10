@@ -34,7 +34,7 @@ agent และแอปหลายตัวเรียกโมเดลห�
 | ซอร์สโค้ด | 13 ไฟล์ / 3859 บรรทัด |
 | เทสต์ | 5 ไฟล์ (ไม่ได้รันในงานนี้) |
 | CI | ไม่มี workflow |
-| Deploy config | `railway.json` + `Dockerfile` (Railway project `solo-ai-gateway`, always-on) |
+| Deploy config | `.railway/railway.ts` + `Dockerfile` (Railway project `solo-ai-gateway`, always-on) |
 | Live URL | https://api.bookchaowalit.com (ระบุใน README/ทะเบียน; ไม่ได้ probe สดในงานนี้) |
 
 ## 5. คุณค่าและจุดต่าง
@@ -66,4 +66,4 @@ agent และแอปหลายตัวเรียกโมเดลห�
 ## แหล่งข้อมูล
 
 - `README.md`
-- `Dockerfile`, `railway.json`, `tests/`
+- `Dockerfile`, `.railway/railway.ts`, `tests/`
