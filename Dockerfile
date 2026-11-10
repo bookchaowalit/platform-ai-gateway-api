@@ -28,6 +28,13 @@ RUN sed -i 's/\r$//' ./entrypoint.sh \
     && chmod 0755 ./entrypoint.sh \
     && mkdir -p /data \
     && chown node:node /data
+# Image hardening: take Debian security fixes newer than the base tag, and drop npm, npx and
+# corepack, which the runtime never calls (their bundled dependencies are what Trivy flags).
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+              /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 EXPOSE 8080
 # Starts as root only to take ownership of a freshly mounted volume, then
 # drops to the unprivileged `node` user before the server starts.
