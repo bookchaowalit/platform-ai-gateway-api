@@ -118,6 +118,8 @@ export interface AiGatewayStatus {
     tools: true;
     image_input: true;
     json_schema: true;
+    /** SPEC-004: profiles whose model is overridden for the calling subject. */
+    subject_models: number;
     /** Routes the calling subject may use with privacy_class private. */
     private_routes: number;
     private_routes_config: 'unset' | 'ok' | 'invalid';
@@ -142,6 +144,8 @@ export interface AiGenerateOptions {
    * Never read from the request body.
    */
   privateRouteSubject?: string;
+  /** SPEC-004: scoped static-token subject for AI_GATEWAY_SUBJECT_MODELS_JSON; set by the service, never from the body. */
+  modelSubject?: string;
   budgetGuard?: AiBudgetGuard;
   attemptAdmission?: AiAttemptAdmission;
   recordTelemetry?: (event: AiTelemetryEvent) => void;
@@ -177,6 +181,7 @@ interface GatewayConfig {
   inputRatePer1k: number | null;
   outputRatePer1k: number | null;
   fallbackModels: Record<AiProfile, string | null>;
+  subjectModels: SubjectModels;
   fallbackInputRatePer1k: number | null;
   fallbackOutputRatePer1k: number | null;
   tokenParam: AiTokenParam;
@@ -260,6 +265,64 @@ function optionalModel(value: string | undefined, fallback: string | null, label
   const candidate = modelName(value, '');
   if (!candidate) throw new AiGatewayError(503, `AI gateway ${label} is invalid`);
   return candidate;
+}
+
+export interface SubjectModel {
+  model: string;
+  inputRatePer1k: number;
+  outputRatePer1k: number;
+}
+
+export type SubjectModels = Map<string, Partial<Record<AiProfile, SubjectModel>>>;
+
+const SUBJECT_MODEL_SUBJECT = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/; // same as API_TOKENS_JSON subjects
+const SUBJECT_MODEL_KEYS = new Set(['model', 'input_usd_per_1k', 'output_usd_per_1k']);
+
+function plainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function strictRate(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new Error('bad rate');
+  return value;
+}
+
+/**
+ * SPEC-004. AI_GATEWAY_SUBJECT_MODELS_JSON: {"<subject>": {"<profile>": {model, input_usd_per_1k, output_usd_per_1k}}}.
+ * Any malformed value throws, so startup refuses it and generate fails closed (AC-06).
+ */
+export function readSubjectModels(env: NodeJS.ProcessEnv = process.env): SubjectModels {
+  const raw = (env.AI_GATEWAY_SUBJECT_MODELS_JSON || '').trim();
+  const result: SubjectModels = new Map();
+  if (!raw) return result;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!plainObject(parsed)) throw new Error('not an object');
+    for (const [subject, profiles] of Object.entries(parsed)) {
+      if (!SUBJECT_MODEL_SUBJECT.test(subject) || !plainObject(profiles)) throw new Error('bad subject');
+      const entry: Partial<Record<AiProfile, SubjectModel>> = {};
+      for (const [profile, spec] of Object.entries(profiles)) {
+        if (!PROFILES.has(profile as AiProfile) || !plainObject(spec)) throw new Error('bad profile');
+        if (Object.keys(spec).some((key) => !SUBJECT_MODEL_KEYS.has(key))) throw new Error('extra key');
+        const model = typeof spec.model === 'string' ? modelName(spec.model, '') : '';
+        if (!model || model !== spec.model) throw new Error('bad model');
+        entry[profile as AiProfile] = {
+          model,
+          inputRatePer1k: strictRate(spec.input_usd_per_1k),
+          outputRatePer1k: strictRate(spec.output_usd_per_1k),
+        };
+      }
+      result.set(subject, entry);
+    }
+  } catch {
+    throw new AiGatewayError(503, 'AI gateway subject model mapping is invalid');
+  }
+  return result;
+}
+
+/** Startup check (variable name only, never values). */
+export function subjectModelsConfigError(env: NodeJS.ProcessEnv): string | null {
+  try { readSubjectModels(env); return null; } catch { return 'AI_GATEWAY_SUBJECT_MODELS_JSON is invalid'; }
 }
 
 function fallbackModels(env: NodeJS.ProcessEnv): Record<AiProfile, string | null> {
@@ -357,6 +420,7 @@ function readConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig {
     throw new AiGatewayError(503, 'AI gateway fallback rate cards are invalid');
   }
   const options = readRequestOptions(env);
+  const subjectModels = readSubjectModels(env);
 
   return {
     provider: 'openai-compatible',
@@ -379,6 +443,7 @@ function readConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig {
     inputRatePer1k,
     outputRatePer1k,
     fallbackModels: fallbacks,
+    subjectModels,
     fallbackInputRatePer1k,
     fallbackOutputRatePer1k,
     ...options,
@@ -392,6 +457,9 @@ function safeStatusValue<T>(read: () => T, fallback: T): T {
 export function getAiGatewayStatus(env: NodeJS.ProcessEnv = process.env, subject?: string): AiGatewayStatus {
   const defaultModel = safeName(env.AI_GATEWAY_MODEL, '');
   const privateRoutes = readPrivateRoutes(env);
+  const ownModels = subject
+    ? safeStatusValue<Partial<Record<AiProfile, SubjectModel>>>(() => readSubjectModels(env).get(subject) ?? {}, {})
+    : {};
   const common = {
     contract: AI_GATEWAY_CONTRACT as typeof AI_GATEWAY_CONTRACT,
     response_language: AI_RESPONSE_LANGUAGE,
@@ -401,9 +469,9 @@ export function getAiGatewayStatus(env: NodeJS.ProcessEnv = process.env, subject
     rate_cards_configured: nonNegativeRate(env.AI_GATEWAY_INPUT_USD_PER_1K) !== null
       && nonNegativeRate(env.AI_GATEWAY_OUTPUT_USD_PER_1K) !== null,
     models: {
-      fast: modelName(env.AI_GATEWAY_MODEL_FAST, defaultModel) || null,
-      balanced: modelName(env.AI_GATEWAY_MODEL_BALANCED, defaultModel) || null,
-      quality: modelName(env.AI_GATEWAY_MODEL_QUALITY, defaultModel) || null,
+      fast: ownModels.fast?.model ?? (modelName(env.AI_GATEWAY_MODEL_FAST, defaultModel) || null),
+      balanced: ownModels.balanced?.model ?? (modelName(env.AI_GATEWAY_MODEL_BALANCED, defaultModel) || null),
+      quality: ownModels.quality?.model ?? (modelName(env.AI_GATEWAY_MODEL_QUALITY, defaultModel) || null),
     },
     fallback_models: safeStatusValue<Record<AiProfile, string | null>>(() => fallbackModels(env), { fast: null, balanced: null, quality: null }),
     request_options: (() => {
@@ -421,6 +489,7 @@ export function getAiGatewayStatus(env: NodeJS.ProcessEnv = process.env, subject
       tools: true as const,
       image_input: true as const,
       json_schema: true as const,
+      subject_models: Object.keys(ownModels).length,
       private_routes: subject ? privateRoutes.routes.get(subject)?.size ?? 0 : 0,
       private_routes_config: privateRoutes.state,
     },
@@ -798,11 +867,14 @@ export async function generateAi(input: unknown, env: NodeJS.ProcessEnv = proces
   }
   const privateRoutes = readPrivateRoutes(env);
   const request = validateRequest(input, config, (route) => privateAllowed(privateRoutes, options.privateRouteSubject, route));
-  const primaryModel = config.models[request.profile];
+  // SPEC-004: a scoped subject may have its own model and prices for this profile, with no fallback.
+  const subjectModel = options.modelSubject ? config.subjectModels.get(options.modelSubject)?.[request.profile] : undefined;
+  const primaryModel = subjectModel?.model ?? config.models[request.profile];
   // Private data goes to a fallback model only when the owner attested that provider too.
-  const fallbackModel = request.privacyClass === 'private' && !privateRoutes.fallbackAttested
+  const fallbackModel = subjectModel || (request.privacyClass === 'private' && !privateRoutes.fallbackAttested)
     ? null
     : config.fallbackModels[request.profile];
+  const subjectModelMetadata: AiTelemetryEvent['metadata'] = subjectModel ? { subject_model: true } : {};
   // Byte count provides a conservative text-token allowance, including Thai;
   // chars / 4 is only a heuristic and must not be used as a cost ceiling.
   // Tools, tool history, the JSON schema and images are billed as input too.
@@ -810,7 +882,9 @@ export async function generateAi(input: unknown, env: NodeJS.ProcessEnv = proces
     + request.structuralBytes + request.imageCount * config.imageTokenEstimate;
   const ratesFor = (fallback: boolean): [number | null, number | null] => fallback
     ? [config.fallbackInputRatePer1k, config.fallbackOutputRatePer1k]
-    : [config.inputRatePer1k, config.outputRatePer1k];
+    : subjectModel
+      ? [subjectModel.inputRatePer1k, subjectModel.outputRatePer1k]
+      : [config.inputRatePer1k, config.outputRatePer1k];
   const estimateFor = (fallback: boolean) => costFor(estimatedInputTokens, request.maxOutputTokens, ...ratesFor(fallback));
   // Shared microUSD ceilings must use the unrounded cost. Telemetry retains its
   // historical eight-decimal representation for backwards compatibility.
@@ -834,7 +908,7 @@ export async function generateAi(input: unknown, env: NodeJS.ProcessEnv = proces
   const failureTelemetry = (id: string, failure: AttemptFailure, fallback: boolean, latencyMs: number, extra: AiTelemetryEvent['metadata'] = {}): AiTelemetryEvent => {
     const event = telemetryForError(id, request, config.providerName, failure.model, latencyMs, 'error', failure.errorClass);
     if (config.errorCostPolicy === 'bounded') event.estimated_cost_usd = failure.httpRejected ? 0 : estimateFor(fallback);
-    event.metadata = { ...event.metadata, profile: request.profile, error_cost_policy: config.errorCostPolicy, ...extra };
+    event.metadata = { ...event.metadata, profile: request.profile, error_cost_policy: config.errorCostPolicy, ...subjectModelMetadata, ...extra };
     return event;
   };
 
@@ -923,6 +997,7 @@ export async function generateAi(input: unknown, env: NodeJS.ProcessEnv = proces
         ...(request.responseFormat ? { response_format: request.responseFormat } : {}),
         ...shapeMetadata,
         ...fallbackMetadata,
+        ...subjectModelMetadata,
       },
     };
     record(telemetry);

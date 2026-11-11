@@ -126,3 +126,47 @@ test('AC-07 status shows only the caller\'s own effective models', () => {
   assert.equal(other.capabilities.subject_models, 0);
   assert.equal(getAiGatewayStatus(env()).capabilities.subject_models, 0);
 });
+
+test('AC-02 failure telemetry and shared admission use the override rates', async () => {
+  const provider = fakeProvider(() => new Response('{}', { status: 504 }));
+  const admitted: Array<number | null> = [];
+  let failure: AiGatewayError | undefined;
+  try {
+    await generateAi(request, env({ AI_GATEWAY_ERROR_COST_POLICY: 'bounded' }), {
+      modelSubject: 'meeting-minutes',
+      attemptAdmission: { reserve: async (estimate: number | null) => { admitted.push(estimate); return { settle: async () => undefined }; } } as any,
+    }).catch((error) => { failure = error; });
+  } finally {
+    provider.restore();
+  }
+  assert.ok(failure instanceof AiGatewayError);
+  assert.equal(failure.telemetry?.metadata.subject_model, true);
+  // 504 is an HTTP rejection: bounded policy records zero, so check the admission estimate instead.
+  const globalAdmitted: Array<number | null> = [];
+  const again = fakeProvider(() => providerText('ok'));
+  try {
+    await generateAi(request, env(), {
+      modelSubject: 'other',
+      attemptAdmission: { reserve: async (estimate: number | null) => { globalAdmitted.push(estimate); return { settle: async () => undefined }; } } as any,
+    });
+  } finally {
+    again.restore();
+  }
+  assert.ok(admitted[0]! > globalAdmitted[0]! * 50, `override admission ${admitted[0]} vs global ${globalAdmitted[0]}`);
+});
+
+test('AC-02 a timeout under the bounded policy records the override-priced estimate', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => { const error = new Error('aborted'); error.name = 'AbortError'; throw error; }) as typeof fetch;
+  try {
+    const failure = await generateAi(request, env({ AI_GATEWAY_ERROR_COST_POLICY: 'bounded' }), { modelSubject: 'meeting-minutes' })
+      .then(() => undefined, (error) => error as AiGatewayError);
+    const globalFailure = await generateAi(request, env({ AI_GATEWAY_ERROR_COST_POLICY: 'bounded' }), { modelSubject: 'other' })
+      .then(() => undefined, (error) => error as AiGatewayError);
+    const mine = failure?.telemetry?.estimated_cost_usd ?? 0;
+    const theirs = globalFailure?.telemetry?.estimated_cost_usd ?? 0;
+    assert.ok(theirs > 0 && mine > theirs * 50, `timeout cost ${mine} vs global ${theirs}`);
+  } finally {
+    globalThis.fetch = original;
+  }
+});

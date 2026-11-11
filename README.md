@@ -98,6 +98,20 @@ process restarts, as the global guard always did. The `response_format` 400 mess
 `GET /api/ai/status` reports `capabilities` (tools, image input, json_schema, the caller's private route count and
 whether that config parsed) and the image limits.
 
+## Per-subject models (SPEC-004)
+
+`AI_GATEWAY_SUBJECT_MODELS_JSON` gives one scoped caller its own model, with that model's own prices, for a profile:
+
+```json
+{"meeting-minutes": {"quality": {"model": "gpt-6.1-sol", "input_usd_per_1k": 0.002, "output_usd_per_1k": 0.008}}}
+```
+
+- Applies only to scoped static tokens (`API_TOKENS_JSON` subjects); workspace and identity JWTs never get an override.
+- The listed rates price that call everywhere: budget reservation, subject budget, shared admission and telemetry.
+- An overridden call has no fallback model. Unlisted subjects and profiles are unchanged.
+- A malformed value refuses startup (Railway keeps the previous deployment). `GET /api/ai/status` shows the caller's
+  own effective `models` and `capabilities.subject_models`. Rollback: unset the variable. Spec: `specs/004-subject-models/spec.md`.
+
 ## Image and video generation (SPEC-003, P1a)
 
 Off until configured; existing routes are unchanged. Spec: `specs/003-media-generation/spec.md`.
