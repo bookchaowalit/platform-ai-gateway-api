@@ -434,3 +434,64 @@ test('Codex: a completed report lost to an outage is kept in R2 and delivered on
   assert.equal(final.assets.length, 1);
   assert.ok(![...objects.keys()].some((k) => k.startsWith('pending-reports/')), 'pending report removed once delivered');
 });
+
+function withPendingBucket(e: WorkerEnv, objects: Map<string, { bytes: Uint8Array }>) {
+  const bucket = e.MEDIA_BUCKET as unknown as { get?: (key: string) => Promise<unknown>; delete?: (key: string) => Promise<void> };
+  bucket.get = async (key: string) => {
+    const object = objects.get(key);
+    return object ? { text: async () => new TextDecoder().decode(object.bytes) } : null;
+  };
+  bucket.delete = async (key: string) => { objects.delete(key); };
+}
+
+test('Codex: a completed report refused as stale is kept and re-delivered on the next lease', async () => {
+  const { env: e, sent, objects } = env();
+  withPendingBucket(e, objects);
+  let leases = 0;
+  const reports: any[] = [];
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    if (path.endsWith('/lease')) {
+      leases += 1;
+      return new Response(JSON.stringify(leases === 1 ? leaseBody() : { ...leaseBody('submit_started'), lease_id: 'lease_2' }), { status: 200 });
+    }
+    const body = JSON.parse(String(init?.body));
+    if (path.endsWith('/report')) {
+      reports.push(body);
+      if (body.state === 'completed' && body.lease_id === 'lease_1') return new Response('{"error":"stale_report"}', { status: 409 });
+    }
+    return new Response('{"ok":true}', { status: 200 });
+  }) as typeof fetch;
+  const adapter = fakeAdapter(async () => [PNG]);
+  const first = batch([await signedMessage()]);
+  await handleQueue(first.value, e, { fetch: fetchImpl, adapters: { fake: adapter } });
+  assert.deepEqual(first.acked, [0]);
+  assert.equal(sent.length, 1, 'handed back with a delay, not dropped');
+  const second = batch([sent[0].body as SignedQueueMessage]);
+  await handleQueue(second.value, e, { fetch: fetchImpl, adapters: { fake: adapter } });
+  assert.equal(adapter.calls, 1);
+  assert.deepEqual(reports.at(-1).lease_id, 'lease_2');
+  assert.equal(reports.at(-1).state, 'completed');
+  assert.ok(![...objects.keys()].some((k) => k.startsWith('pending-reports/')));
+});
+
+test('Codex: when the attempt was already closed (terminal), a pending report is sent as a late report with its original lease', async () => {
+  const { env: e, objects } = env();
+  withPendingBucket(e, objects);
+  objects.set('pending-reports/att_1.json', { bytes: new TextEncoder().encode(JSON.stringify({ assets: [{ object_key: `${PREFIX}x.png` }], lease_id: 'lease_old', report_seq: 2 })) });
+  const reports: any[] = [];
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    if (path.endsWith('/lease')) return new Response('{"error":"terminal"}', { status: 409 });
+    reports.push(JSON.parse(String(init?.body)));
+    return new Response('{"error":"terminal"}', { status: 409 });
+  }) as typeof fetch;
+  const b = batch([await signedMessage()]);
+  await handleQueue(b.value, e, { fetch: fetchImpl, adapters: {} });
+  assert.deepEqual(b.acked, [0]);
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0].lease_id, 'lease_old');
+  assert.equal(reports[0].report_seq, 3);
+  assert.equal(reports[0].state, 'completed');
+  assert.ok(!objects.has('pending-reports/att_1.json'));
+});
