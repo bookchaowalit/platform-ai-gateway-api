@@ -50,8 +50,10 @@ function harness(env: NodeJS.ProcessEnv = {}, overrides: Partial<MediaJobsDeps> 
   const clock = { now: Date.parse('2026-11-11T10:00:00Z') };
   const failEnqueue = { value: false };
   const fullEnv: NodeJS.ProcessEnv = {
-    VENDOR_A_KEY: 'MARKER_vendor_key',
+    AI_GATEWAY_MEDIA_ENABLED: 'true',
+    AI_GATEWAY_MEDIA_PROVIDERS: 'vendor-a',
     AI_GATEWAY_MEDIA_MONTHLY_BUDGET_USD: '10',
+    AI_GATEWAY_MEDIA_SUBJECT_HASH_KEY: 'MARKER_subject_hash_key',
     ...env,
   };
   const jobs = createMediaJobs({
@@ -115,14 +117,29 @@ test('SPEC-003 AC-03 rejects invalid requests before anything is written', async
   assert.equal(h.sent.length, 0);
 });
 
-test('SPEC-003 AC-01 media is off until a monthly media cap and an enabled model with a credential exist', async () => {
-  const noCap = harness({ AI_GATEWAY_MEDIA_MONTHLY_BUDGET_USD: '' });
-  assert.equal((await noCap.jobs.create(caller, body(), {})).status, 503);
-  const noKey = harness({ VENDOR_A_KEY: '' });
-  const result = await noKey.jobs.create(caller, body(), {});
+test('SPEC-003 AC-01 media is off until enabled, capped and a provider is available', async () => {
+  for (const env of [
+    { AI_GATEWAY_MEDIA_ENABLED: '' },
+    { AI_GATEWAY_MEDIA_MONTHLY_BUDGET_USD: '' },
+    { AI_GATEWAY_MEDIA_PROVIDERS: '' },
+    { AI_GATEWAY_MEDIA_SUBJECT_HASH_KEY: '' },
+  ]) {
+    const h = harness(env);
+    const result = await h.jobs.create(caller, body(), {});
+    assert.equal(result.status, 503, JSON.stringify(env));
+    assert.equal((result.body as { error: string }).error, 'media_disabled');
+  }
+});
+
+test('SPEC-003 AC-04 no routable model is a 422 no_route with caller-facing reasons', async () => {
+  const h = harness({ AI_GATEWAY_MEDIA_SUBJECT_MODELS_JSON: JSON.stringify({ 'client-a': [] }) });
+  const result = await h.jobs.create(caller, body(), {});
   assert.equal(result.status, 422);
   assert.equal((result.body as { error: string }).error, 'no_route');
-  assert.deepEqual((result.body as { routing: { skipped: unknown[] } }).routing.skipped, [{ model_id: 'a-photo', reason: 'unavailable' }]);
+  assert.deepEqual((result.body as { routing: { skipped: unknown[] } }).routing.skipped, [{ model_id: 'a-photo', reason: 'subject_not_allowed' }]);
+  const unavailable = harness({ AI_GATEWAY_MEDIA_PROVIDERS: 'vendor-z' });
+  // vendor-z is not in the registry, so media is not usable at all.
+  assert.equal((await unavailable.jobs.create(caller, body(), {})).status, 503);
 });
 
 // ---------------------------------------------------------------- AC-06 / AC-07
@@ -278,22 +295,28 @@ test('SPEC-003 AC-08 provider slots: max_concurrent 1 makes the second start lea
 test('SPEC-003 AC-08 sync completion settles once and writes one ledger row', async () => {
   const h = harness();
   const created = await h.jobs.create(caller, body(), {});
-  const lease = (await startLease(h)).body as { lease_id: string };
+  const lease = (await startLease(h)).body as { lease_id: string; attempt: { object_key_prefix: string } };
   const id = h.sent[0].attempt_id;
+  assert.match(lease.attempt.object_key_prefix, /^images\/[0-9a-f]{32}\/2026\/11\/$/);
   assert.equal((await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 1, state: 'submit_started' })).status, 200);
-  const done = await h.jobs.report(id, {
+  const outside = await h.jobs.report(id, {
     lease_id: lease.lease_id, report_seq: 2, state: 'completed',
-    assets: [{ object_key: 'images/x/2026/11/a.png', media_type: 'image/png', bytes: 1234, width: 1024, height: 1024, sha256: 'f'.repeat(64) }],
+    assets: [{ object_key: 'images/other/2026/11/a.png', media_type: 'image/png', bytes: 1, sha256: 'f'.repeat(64) }],
+  });
+  assert.equal(outside.status, 400, 'object keys must stay under the leased prefix');
+  const done = await h.jobs.report(id, {
+    lease_id: lease.lease_id, report_seq: 3, state: 'completed',
+    assets: [{ object_key: `${lease.attempt.object_key_prefix}a.png`, media_type: 'image/png', bytes: 1234, width: 1024, height: 1024, sha256: 'f'.repeat(64) }],
   });
   assert.equal(done.status, 200);
-  const late = await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 3, state: 'completed', assets: [] });
+  const late = await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 4, state: 'completed', assets: [] });
   assert.equal(late.status, 409);
   const rows = h.store.db.prepare("SELECT route, provider, model, estimated_cost_usd, metadata_json FROM ai_run_telemetry WHERE route LIKE 'media.%'").all() as Array<Record<string, unknown>>;
   assert.equal(rows.length, 1);
   assert.equal(rows[0].route, 'media.image');
   assert.equal(rows[0].estimated_cost_usd, 0.04);
   assert.equal(JSON.parse(String(rows[0].metadata_json)).subject, 'client-a');
-  assert.doesNotMatch(String(rows[0].metadata_json), /MARKER_PROMPT_TEXT|images\/x/);
+  assert.doesNotMatch(String(rows[0].metadata_json), /MARKER_PROMPT_TEXT|images\//);
   const read = await h.jobs.read(caller, (created.body as { id: string }).id, { signGetUrl: async (key) => ({ url: `https://signed.example/${key}?X-Amz-Signature=abc`, expires_at: 'soon' }) });
   assert.equal(read.status, 200);
   const view = read.body as { status: string; attempts: Array<{ status: string; cost_usd: number; assets: Array<{ url: string }> }>; ai_generated: boolean };
