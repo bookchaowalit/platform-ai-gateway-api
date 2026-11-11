@@ -130,7 +130,7 @@ test('SPEC-003 AC-04 single mode picks the first candidate plus fallback_depth f
 test('SPEC-003 AC-04 skipped models carry one reason each, in filter order', () => {
   const registry = fixture();
   registry.models['a-photo'].enabled = false;
-  const result = routeMediaGeneration(registry, { ...baseRequest, aspect: '16:9' }, ctx({
+  const result = routeMediaGeneration(registry, { ...baseRequest, aspect: '16:9', privacy_class: 'public' }, ctx({
     hasCredential: (env) => env !== 'VENDOR_B_KEY',
   }));
   assert.deepEqual(result.selected, []);
