@@ -162,9 +162,18 @@ function hmacKey(secret: string): Promise<CryptoKey> {
   return key;
 }
 
-/** HMAC-SHA256 over fields joined with a unit separator, so field boundaries cannot shift. */
+/** HMAC-SHA256 over length-prefixed fields (4-byte big-endian length + UTF-8), so no two field lists collide. */
 async function mac(secret: string, ...fields: string[]): Promise<Uint8Array> {
-  return new Uint8Array(await subtle.sign('HMAC', await hmacKey(secret), encoder.encode(fields.join('\u001f'))));
+  const parts = fields.map((field) => encoder.encode(field));
+  const message = new Uint8Array(parts.reduce((total, part) => total + 4 + part.length, 0));
+  const view = new DataView(message.buffer);
+  let offset = 0;
+  for (const part of parts) {
+    view.setUint32(offset, part.length);
+    message.set(part, offset + 4);
+    offset += 4 + part.length;
+  }
+  return new Uint8Array(await subtle.sign('HMAC', await hmacKey(secret), message));
 }
 
 function timingSafeEqual(left: string, right: string): boolean {
@@ -192,8 +201,22 @@ export async function queueMessageSignature(secret: string, message: QueueMessag
   return toBase64Url(await mac(secret, 'queue', String(message.v), message.attempt_id, message.dispatch_no, message.reason, message.ref_mac ?? ''));
 }
 
+const QUEUE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const QUEUE_REASONS = new Set<QueueReason>(['start', 'poll', 'webhook', 'cancel']);
+
+/** Strict format check before any MAC work: v 1, known reason, id-shaped fields, optional ref mac. */
+export function isQueueMessageShape(message: unknown): message is SignedQueueMessage {
+  const m = message as Partial<SignedQueueMessage> | null;
+  return !!m && typeof m === 'object' && m.v === 1
+    && typeof m.attempt_id === 'string' && QUEUE_ID.test(m.attempt_id)
+    && typeof m.dispatch_no === 'string' && QUEUE_ID.test(m.dispatch_no)
+    && typeof m.reason === 'string' && QUEUE_REASONS.has(m.reason as QueueReason)
+    && (m.ref_mac === undefined || (typeof m.ref_mac === 'string' && QUEUE_ID.test(m.ref_mac)))
+    && typeof m.sig === 'string' && m.sig !== '' && m.sig.length <= 128;
+}
+
 export async function verifyQueueMessage(secret: string, message: SignedQueueMessage): Promise<boolean> {
-  if (typeof message?.sig !== 'string' || message.sig === '') return false;
+  if (!isQueueMessageShape(message)) return false;
   const expected = await queueMessageSignature(secret, message);
   return timingSafeEqual(expected, message.sig);
 }

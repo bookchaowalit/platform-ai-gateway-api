@@ -92,3 +92,21 @@ test('SPEC-003 §4.5 subject hash hides the subject and canonical hash ignores k
   assert.equal(await canonicalHash({ b: 1, a: { d: [1, 2], c: 'x' } }), await canonicalHash({ a: { c: 'x', d: [1, 2] }, b: 1 }));
   assert.notEqual(await canonicalHash({ a: [1, 2] }), await canonicalHash({ a: [2, 1] }));
 });
+
+test('SPEC-003 §4.5 macs are length-prefixed and messages are format-checked before verifying', async () => {
+  const { queueMessageSignature: sign, verifyQueueMessage: verify } = await import('../api/media/crypto.js');
+  const a = { v: 1 as const, attempt_id: 'att\u001fx', dispatch_no: 'd', reason: 'start' as const };
+  const b = { v: 1 as const, attempt_id: 'att', dispatch_no: 'x\u001fd', reason: 'start' as const };
+  assert.notEqual(await sign(QUEUE_KEY, a), await sign(QUEUE_KEY, b));
+  const good = { v: 1 as const, attempt_id: 'att_1', dispatch_no: 'd_1', reason: 'start' as const };
+  const sig = await sign(QUEUE_KEY, good);
+  for (const bad of [
+    { ...good, v: 2, sig },
+    { ...good, reason: 'other', sig },
+    { ...good, attempt_id: 'has space', sig },
+    { ...good, attempt_id: 7, sig },
+    { ...good, ref_mac: 5, sig },
+  ]) {
+    assert.equal(await verify(QUEUE_KEY, bad as never), false, JSON.stringify(bad));
+  }
+});
