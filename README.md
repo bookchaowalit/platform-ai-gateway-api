@@ -120,8 +120,14 @@ has keys for, e.g. `openai`), `AI_GATEWAY_MEDIA_MONTHLY_BUDGET_USD` (required), 
 `AI_GATEWAY_MEDIA_SUBJECT_HASH_KEY`, `AI_GATEWAY_MEDIA_WORKER_URL`, `AI_GATEWAY_MEDIA_WORKER_ENQUEUE_TOKEN`,
 `AI_GATEWAY_MEDIA_R2_ACCOUNT_ID`, `AI_GATEWAY_MEDIA_R2_BUCKET`, `AI_GATEWAY_MEDIA_R2_ACCESS_KEY_ID`,
 `AI_GATEWAY_MEDIA_R2_SECRET_ACCESS_KEY` (R2 token limited to that bucket). Optional: `AI_GATEWAY_MEDIA_IMAGE_RPM`,
-`AI_GATEWAY_MEDIA_READ_RPM`, `AI_GATEWAY_MEDIA_MAX_ACTIVE_PER_SUBJECT`, `AI_GATEWAY_MEDIA_SUBJECT_MODELS_JSON`,
-`AI_GATEWAY_MEDIA_URL_TTL_S`. `GET /api/ai/status` → `media.problems` names whatever is missing (never values).
+`AI_GATEWAY_MEDIA_READ_RPM`, `AI_GATEWAY_MEDIA_INTERNAL_RPM`, `AI_GATEWAY_MEDIA_MAX_ACTIVE_PER_SUBJECT`,
+`AI_GATEWAY_MEDIA_SUBJECT_MODELS_JSON`, `AI_GATEWAY_MEDIA_URL_TTL_S`, `AI_GATEWAY_MEDIA_RETENTION_DAYS` (≤ 30, the bucket
+lifecycle). `AI_GATEWAY_MEDIA_WORKER_URL` must be `https://`.
+
+The worker's gateway token (`MEDIA_WORKER_GATEWAY_TOKEN`) must be an entry in `API_TOKENS_JSON` with exactly the scope
+`ai:media-worker` (no other scopes); worker routes accept only such scoped static tokens, under every auth profile.
+Switching media off (`AI_GATEWAY_MEDIA_ENABLED` unset) stops new provider calls at once; open jobs still close and
+release their reservations. `GET /api/ai/status` → `media.problems` names whatever is missing (never values).
 
 Worker (`workers/media-worker`, Wrangler): see `wrangler.toml` for the queue, DLQ and bucket to create once and the
 four secrets (`MEDIA_ENQUEUE_TOKEN`, `MEDIA_QUEUE_KEY`, `MEDIA_WORKER_GATEWAY_TOKEN`, `OPENAI_API_KEY`). Deploy with

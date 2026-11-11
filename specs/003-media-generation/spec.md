@@ -6,7 +6,7 @@ Standard: ADR-0004 — TDD + SDD (architecture-docs, `docs/architecture/decision
 
 | Field | Value |
 |---|---|
-| Spec ID / version | SPEC-003 / 1.0 |
+| Spec ID / version | SPEC-003 / 1.1 |
 | Status | approved 2026-11-11 (owner); P1a code complete on branch `spec/003-media-generation` (not pushed, not deployed); Q1–Q4 open, Q5 = option A |
 | Repository / path | bookchaowalit/platform-ai-gateway-api / `specs/003-media-generation/spec.md` |
 | Owner (maker) | Claude Code |
@@ -625,8 +625,9 @@ Worker tests run the worker module under the same runner with the Workers bindin
 ### Red / green log
 
 P1a red runs are local (`npx tsx --test <file>`), committed before the implementation; green is the full local suite
-(`npm test`: 222 pass, 1 skipped as before), `npm run typecheck`, `npm run build`, a local `docker build` + container
-smoke (healthz 200, media off by default), and `wrangler deploy --dry-run` of the worker (14 KiB). CI run URLs are
+(`npm test`: 250 pass, 1 skipped as before, after the DoD fixes in b8fce4e), `npm run typecheck`, `npm run build`, a
+local `docker build` + container smoke (healthz 200, media create 503 with no media env), and `wrangler deploy --dry-run`
+of the worker (15 KiB), all re-run on b8fce4e. CI run URLs are
 added when the branch is pushed. P1b, P2 and P3 rows are added when those phases start.
 
 | Scenario (P1a) | Test | Red: commit · failure | Green | Note |
@@ -639,19 +640,43 @@ added when the branch is pushed. P1b, P2 and P3 rows are added when those phases
 | AC-01, AC-02, AC-12, AC-18 (P1a), AC-19 | `tests/media_http.test.ts` | 9c44c59 · no media routes | 9681e93 | `tests/dockerfile.test.ts` caught the missing COPY lines |
 | AC-09, §4.5, rules 4/5/8 | `tests/media_worker.test.ts` | 6dbfba2 · 11 fail on stubs | 671bec4 | report retry through gateway blips added with its test |
 
-**Implementation notes that differ from the text above (to fold into v1.1 at the P1a DoD review):**
+**Where the tests live.** §5 names planned files (`media_admission`, `media_budget`, `media_lease`, `media_privacy`,
+`media_compare`, AC-18 in `ai_gateway_service.test`, AC-19 in `ai_rate_limit.test`). P1a put them in fewer files:
+AC-01/03/06/07/08/12/16 and rules 3–9 in `tests/media_jobs.test.ts`; AC-01/02/12/18/19 over HTTP in
+`tests/media_http.test.ts`; AC-04/05 in `tests/media_generation_registry.test.ts`; AC-09/10 (worker side) in
+`tests/media_worker.test.ts`; crypto in `tests/media_crypto.test.ts`; storage in `tests/media_store.test.ts`; signed URLs
+in `tests/media_r2.test.ts`; the AC-16 Sentry case in `tests/sentry.test.ts`. Test titles start with the AC or with
+`Codex:` / `DoD` for review-driven cases.
+
+**Implementation notes that differ from the text above (v1.1, folded in at the P1a DoD review, 2026-11-11):**
 - Option A puts provider credentials on the worker, so the gateway's "credential present" check (§3.4) is
   `AI_GATEWAY_MEDIA_PROVIDERS` listing the provider id.
 - `AI_GATEWAY_MEDIA_MONTHLY_BUDGET_USD` is **required** (media stays off without it), not optional.
 - `AI_GATEWAY_MEDIA_ENABLED`, `AI_GATEWAY_MEDIA_SUBJECT_HASH_KEY`, the worker URL/enqueue token and the R2 signer are
   also required for media to be on; `/api/ai/status` lists each missing one by name.
 - Compare, blind, references, video, `/api/ai/images` and the media MCP server are refused or absent in P1a (P1b/P2).
+- GET shape: adds `reserved_usd` and `settled_usd`; `latency_ms`, `votes_summary` and `routing` are not returned in P1a.
+- The lease response has no `max_output_bytes`; the worker enforces its own cap (25 MB per image).
+- Housekeeping runs every 10 s (not 60 s) plus once at startup; it keeps cleaning up while media is off but dispatches
+  and grants start leases only while media is on (kill switch, security review).
+- `/api/ai/status` does not yet flag prices older than 90 days (deferred to P1b).
+- Public media routes need an exact `ai:image` / `ai:video` scope, so `*` tokens are refused there too (stricter).
+- The OpenAI adapter drops `negative_prompt` (the Images API has no such field).
+- Ledger metadata: `subject`, `kind`, `mode`, `profile`, `media_route`, `prompt_sha256`, `model_id`, `provider_id`, `n`,
+  `seconds`, `units`, `bytes`, `attempt_status`, `error_code` (AC-16; `route` is the ledger route `media.image`).
+- A failed report may carry `provider_charged: false` (the provider refused with a 4xx): it settles 0 even after
+  `submit_started`. 5xx and network failures are unknown outcomes and settle the reservation.
+- The worker sends nothing to Sentry; the gateway scrubber removes `X-Amz-Signature/Credential/Security-Token` values.
+- Asset reads expire after `AI_GATEWAY_MEDIA_RETENTION_DAYS` (default and maximum 30, the bucket rule); rows are pruned
+  after 400 days.
+- An enabled registry model must name a real `provider_model` and at least one price.
 
 ## 9. Change log
 
 | Version | Date | Change | Scenarios affected | Approved by |
 |---|---|---|---|---|
 | 0.1 | 2026-11-11 | First draft: one provider, image sync + video jobs inside the gateway | all | — |
+| 1.1 | 2026-11-11 | P1a DoD review fold-in: implementation notes and test locations recorded in §8 red/green log; no behaviour added beyond P1a | AC-01–19 (P1a) | Owner approval of 1.0 covers it: notes and stricter checks only |
 | 1.0 | 2026-11-11 | Owner approved; P1a TDD starts | all | Owner |
 | 0.10 | 2026-11-11 | Codex round 6 (2 P2, accepted): heartbeat covers slow sync provider calls and polling, not only streaming; judge votes keyed by attempt and rubric | §4.4, §4.7, AC-08 | — |
 | 0.9 | 2026-11-11 | Codex round 5 (3 P2, all accepted): `max_in_flight` also counts `leased` start leases; cancel path defined (`cancel_requested_at`, signed `cancel` message, close on the worker's report, 409 `cancelled` stops a pending submit); webhook job ref carried as `ref_mac` and checked at lease (409 `ref_mismatch`) | §4.1, §4.4, §4.5, §4.7, AC-10, AC-15 | — |
@@ -669,4 +694,4 @@ added when the branch is pushed. P1b, P2 and P3 rows are added when those phases
 |---|---|---|---|---|
 | Spec ready (before code, DoR) | Reviewer (checker) | Fresh Claude reviewer / 2026-11-11 | **approve** (after revise rounds: 0.4, 0.5, 0.7) | round 1: 9 blocking + 9 non-blocking; round 2: 6 blocking + 7 non-blocking; all accepted; third pass revise (1 blocking) → fixed in 0.7; diff check **approve** (non-blocking N26–N31 fixed in 0.8) |
 | Spec ready (before code, DoR) | Approver | Owner / 2026-11-11 | approve; start P1a | Chat reply "อนุมัติ เริ่ม P1a" to the question "Approve SPEC-003 and start TDD of P1a?" (v0.10). Covers the `AGENTS.md` MCP line (applies in P1b). Q1–Q5 still open; Q5 decides where the P1a worker runs |
-| Implemented (DoD), per phase | Reviewer (checker) | — | — | — |
+| Implemented (DoD), P1a | Reviewer (checker) | Fresh Claude reviewer / 2026-11-11 | revise → fixed in b8fce4e (re-check pending) | 3 blocking (Sentry signed-URL scrub, missing tests, ledger fields) + 7 non-blocking, all accepted; tests 250 pass, docker smoke and wrangler dry-run re-run |
