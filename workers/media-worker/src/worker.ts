@@ -216,6 +216,17 @@ async function processMessage(message: SignedQueueMessage, env: WorkerEnv, deps:
     return { delaySeconds: Math.min(Math.max(Math.ceil((Number.isFinite(retryMs) ? retryMs : 5_000) / 1000), 5), 300) };
   }
   if (lease.status !== 200) {
+    if (lease.status === 409 && (lease.body.error === 'terminal' || lease.body.error === 'lease_exhausted')) {
+      // The attempt was closed (e.g. timeout) while a finished result waited in R2: deliver it as a late
+      // report on its original lease; the gateway links the asset and settles nothing more (rule 3).
+      const pending = await env.MEDIA_BUCKET.get?.(pendingReportKey(message.attempt_id));
+      if (pending) {
+        const saved = JSON.parse(await pending.text()) as { assets: unknown[]; lease_id: string; report_seq: number };
+        const late = await call(message.attempt_id, 'report', { lease_id: saved.lease_id, report_seq: saved.report_seq + 1, state: 'completed', assets: saved.assets });
+        if (late.status === 200 || late.status === 409) await env.MEDIA_BUCKET.delete?.(pendingReportKey(message.attempt_id));
+        return 'ack';
+      }
+    }
     // 403 (bad signature) and 409 terminal states: nothing to do for this message.
     if (lease.status === 403 || DROP_ERRORS.has(String(lease.body.error))) return 'ack';
     return { delaySeconds: GATEWAY_DOWN_DELAY_S };
@@ -295,7 +306,7 @@ async function processMessage(message: SignedQueueMessage, env: WorkerEnv, deps:
       return 'ack';
     }
 
-    const assets = [];
+    const assets: Array<{ object_key: string; media_type: string; bytes: number; sha256: string }> = [];
     try {
       for (let i = 0; i < outputs.length; i += 1) {
         const bytes = outputs[i].bytes;
@@ -311,16 +322,20 @@ async function processMessage(message: SignedQueueMessage, env: WorkerEnv, deps:
       await report({ state: 'failed', error_code: 'provider_error' });
       return 'ack';
     }
+    // Keep the result durable whenever the gateway did not take it (outage, or a lease that expired while
+    // we worked): the next lease delivers it, or a late report on this lease if the attempt was closed.
+    const keepPending = () => env.MEDIA_BUCKET.put(pendingReportKey(message.attempt_id),
+      JSON.stringify({ assets, lease_id: granted.lease_id, report_seq: seq }), { httpMetadata: { contentType: 'application/json' } });
+    let completed: { status: number; body: Record<string, unknown> };
     try {
-      await report({ state: 'completed', assets });
+      completed = await report({ state: 'completed', assets });
     } catch (error) {
-      // Keep the result durable before handing the message back: the next lease delivers it (no re-run, no loss).
-      if (error instanceof GatewayDown) {
-        await env.MEDIA_BUCKET.put(pendingReportKey(message.attempt_id), JSON.stringify({ assets }), { httpMetadata: { contentType: 'application/json' } });
-      }
+      if (error instanceof GatewayDown) await keepPending();
       throw error;
     }
-    return 'ack';
+    if (completed.status === 200 || completed.body.error === 'terminal') return 'ack';
+    await keepPending();
+    return { delaySeconds: 10 };
   } finally {
     clearInterval(heartbeat);
   }
