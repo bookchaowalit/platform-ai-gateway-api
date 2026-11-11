@@ -57,20 +57,22 @@ export interface TelemetryStore {
 /**
  * Load every migration in MIGRATION_FILES, in order, as one SQL script. Source layout:
  * api/ai-gateway-service → database/migrations. Bundled layout: dist/migrations next to the
- * server bundle. AI_GATEWAY_MIGRATION_PATH (path of the 025 file) overrides both: the other
- * files are read from the same directory.
+ * server bundle. AI_GATEWAY_MIGRATION_PATH (path of the telemetry migration, any name) overrides
+ * both: that exact file is read, and the other files come from the same directory.
  */
 export function loadTelemetryMigration(env: NodeJS.ProcessEnv = process.env, moduleUrl = import.meta.url): string {
   const here = dirname(fileURLToPath(moduleUrl));
   const override = env.AI_GATEWAY_MIGRATION_PATH?.trim();
-  const directories = [
-    override ? dirname(override) : undefined,
-    `${here}/migrations`,
-    `${here}/../../database/migrations`,
-  ].filter((candidate): candidate is string => Boolean(candidate));
-  for (const directory of directories) {
-    if (MIGRATION_FILES.every((file) => existsSync(`${directory}/${file}`))) {
-      return MIGRATION_FILES.map((file) => readFileSync(`${directory}/${file}`, 'utf8')).join('\n');
+  // Each layout: [telemetry file path, directory of the other migration files].
+  const layouts: Array<[string, string]> = [
+    ...(override ? [[override, dirname(override)] as [string, string]] : []),
+    [`${here}/migrations/${TELEMETRY_MIGRATION_FILE}`, `${here}/migrations`],
+    [`${here}/../../database/migrations/${TELEMETRY_MIGRATION_FILE}`, `${here}/../../database/migrations`],
+  ];
+  for (const [telemetryFile, directory] of layouts) {
+    const rest = MIGRATION_FILES.slice(1).map((file) => `${directory}/${file}`);
+    if (existsSync(telemetryFile) && rest.every((file) => existsSync(file))) {
+      return [telemetryFile, ...rest].map((file) => readFileSync(file, 'utf8')).join('\n');
     }
   }
   throw new Error(`migrations ${MIGRATION_FILES.join(', ')} were not found`);

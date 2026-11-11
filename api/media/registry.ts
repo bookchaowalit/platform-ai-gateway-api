@@ -196,6 +196,18 @@ export function validateMediaGenerationRegistry(registry: MediaGenerationRegistr
   for (const [id, model] of Object.entries(models)) {
     if (!providers[model.provider]) problems.push(`model ${id}: provider is unknown`);
     if (model.kind !== 'image' && model.kind !== 'video') problems.push(`model ${id}: kind is invalid`);
+    const caps = model.capabilities;
+    if (!caps || typeof caps !== 'object' || !Array.isArray(caps.aspects) || !Array.isArray(caps.resolutions)
+      || (caps.seconds !== undefined && !Array.isArray(caps.seconds)) || typeof caps.references !== 'number') {
+      problems.push(`model ${id}: capabilities is malformed`);
+      continue;
+    }
+    if (model.kind === 'video' && (!Array.isArray(caps.seconds) || caps.seconds.length === 0)) problems.push(`model ${id}: capabilities.seconds is missing for video`);
+    const map = model.param_map;
+    if (!map || typeof map !== 'object' || !map.aspect || typeof map.aspect !== 'object' || !map.resolution || typeof map.resolution !== 'object') {
+      problems.push(`model ${id}: param_map is malformed`);
+      continue;
+    }
     for (const aspect of model.capabilities?.aspects ?? []) {
       if (!model.param_map?.aspect?.[aspect]) problems.push(`model ${id}: param_map.aspect is missing ${aspect}`);
     }
@@ -259,7 +271,8 @@ export function routeMediaGeneration(
   const profile = request.profile ? registry.profiles[request.profile] : undefined;
   const resolution = request.resolution ?? profile?.defaults.resolution ?? 'standard';
   const candidates = request.models ?? profile?.models ?? [];
-  const units = request.kind === 'image' ? (request.n ?? 1) : (request.seconds ?? 0);
+  const seconds = request.seconds ?? profile?.defaults.seconds;
+  const units = request.kind === 'image' ? (request.n ?? 1) : (seconds ?? 0);
   const skipped: MediaRouteResult['skipped'] = [];
   const eligible: Array<{ pick: MediaRoutePick; order: number; score?: number }> = [];
 
@@ -271,7 +284,7 @@ export function routeMediaGeneration(
       return;
     }
     const skip = (reason: SkipReason) => skipped.push({ model_id: modelId, reason });
-    if (!capabilityFits(model, request, resolution, profile)) return skip('capability');
+    if (!capabilityFits(model, { ...request, seconds }, resolution, profile)) return skip('capability');
     if (!registry.policy.external_privacy_classes.includes(request.privacy_class)
       || !provider.privacy_classes.includes(request.privacy_class)) return skip('privacy');
     if (!ctx.hasCredential(provider.credential_env)) return skip('no_credential');
