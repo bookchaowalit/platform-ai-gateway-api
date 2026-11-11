@@ -6,6 +6,7 @@
  *   GET  /api/ai/status    scope api:read
  *   POST /api/ai/generate  scope ai:generate
  *   POST /api/media/route  scope ai:generate (metadata-only transcription routing)
+ *   /api/ai/media/*, /internal/media/*  SPEC-003 image/video generation (api/media/http.ts)
  *
  * It reuses the shared gateway modules (contract solo-empire.ai-gateway.v1,
  * Thai-first policy, budget guard, rate limiter) but none of the local
@@ -29,6 +30,8 @@ import { createWorkspaceJwtAuthenticator, type WorkspaceAuthResult } from '../wo
 import { createIdentityAuthenticator } from '../identity_auth.js';
 import type { JWTVerifyGetKey } from 'jose';
 import { createSharedAdmission, SharedAdmissionError } from '../ai_shared_admission.js';
+import { createMediaHttp } from '../media/http.js';
+import type { MediaGenerationRegistry } from '../media/registry.js';
 
 export const AI_GATEWAY_SERVICE_CONTRACT = 'solo-empire.ai-gateway-service.v1' as const;
 export const AI_GATEWAY_SERVICE_VERSION = '0.1.0';
@@ -56,6 +59,10 @@ export interface AiGatewayServiceOptions {
   log?: (line: ServiceLogLine) => void;
   /** Tests only: a local JWKS for the identity profile instead of the issuer's. */
   identityKeys?: JWTVerifyGetKey;
+  /** Tests only: a media registry instead of platform/media-generation-routing.json. */
+  mediaRegistry?: MediaGenerationRegistry;
+  /** Media housekeeping interval (default 10 s; 0 disables, for tests). */
+  mediaHousekeepingMs?: number;
 }
 
 export interface AiGatewayService {
@@ -266,6 +273,20 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
     });
   };
 
+  const media = createMediaHttp({
+    env,
+    db: store.db,
+    record: (event) => store.record(event),
+    registry: options.mediaRegistry,
+    authenticate: async (req, scope) => auth.authenticate(req, scope),
+    readJson: readJsonBody,
+    sendJson,
+    authFailure,
+    maxBodyBytes,
+    log,
+  });
+  const stopMediaHousekeeping = media.startHousekeeping(options.mediaHousekeepingMs ?? 10_000);
+
   const withSubject = (event: AiTelemetryEvent, subject: string, workspace?: string): AiTelemetryEvent => ({
     ...event,
     metadata: { ...event.metadata, subject, ...(workspace ? { workspace_id: workspace } : {}), service: AI_GATEWAY_SERVICE_CONTRACT },
@@ -401,6 +422,7 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
         ...getAiGatewayStatus(env, privateRouteSubject(result)),
         budget: getAiBudgetStatus(store.db, env),
         rate_limit: rateLimiter.status(),
+        media: media.status(result),
         service: {
           contract: AI_GATEWAY_SERVICE_CONTRACT,
           version: AI_GATEWAY_SERVICE_VERSION,
@@ -418,6 +440,8 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
       if (method !== 'POST') return sendError(res, 405, 'Method Not Allowed', 'method_not_allowed', { Allow: 'POST' });
       return handleGenerate(req, res);
     }
+
+    if (await media.handle(req, res, path, method)) return;
 
     if (path === '/api/media/route') {
       if (method !== 'POST') return sendError(res, 405, 'Method Not Allowed', 'method_not_allowed', { Allow: 'POST' });
@@ -478,6 +502,7 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
   server.requestTimeout = timeoutMs * 2 + 15_000;
   server.headersTimeout = 15_000;
   server.keepAliveTimeout = 65_000;
+  server.on('close', stopMediaHousekeeping);
 
   return { server, env, rateLimiter };
 }

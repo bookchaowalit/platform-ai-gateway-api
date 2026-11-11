@@ -1,0 +1,76 @@
+{
+  "schema_version": "solo-empire.media-generation-routing.v1",
+  "updated_at": "2026-11-11",
+  "description": "SPEC-003 media generation registry. Rankings, prices and enabled flags change here, never in code. Every model ships disabled with no prices: the owner sets provider_model, prices (from the provider's pricing page, with source and checked_at) and enabled on setup day (SPEC-003 Q1, Q4).",
+  "policy": {
+    "max_evaluation_age_days": 60,
+    "external_privacy_classes": ["public", "internal"],
+    "fallback_depth": 0,
+    "lease_wait_max_ms": 1800000,
+    "job_timeout_ms": 1800000
+  },
+  "providers": {
+    "openai": {
+      "adapter": "openai-images",
+      "credential_env": "OPENAI_API_KEY",
+      "max_concurrent": 2,
+      "max_in_flight": 4,
+      "rpm": 20,
+      "webhook": false,
+      "output_hosts": [],
+      "privacy_classes": ["public", "internal"],
+      "terms_checked_at": "2026-11-11"
+    }
+  },
+  "models": {
+    "openai-image": {
+      "provider": "openai",
+      "provider_model": "set-on-setup-day",
+      "kind": "image",
+      "enabled": false,
+      "capabilities": {
+        "aspects": ["1:1", "3:2", "2:3"],
+        "resolutions": ["draft", "standard", "high"],
+        "references": 0,
+        "text_in_image": "fair",
+        "max_n": 4
+      },
+      "param_map": {
+        "aspect": {
+          "1:1": { "size": "1024x1024" },
+          "3:2": { "size": "1536x1024" },
+          "2:3": { "size": "1024x1536" }
+        },
+        "resolution": {
+          "draft": { "quality": "low" },
+          "standard": { "quality": "medium" },
+          "high": { "quality": "high" }
+        }
+      },
+      "extra_params": {
+        "background": { "type": "string", "values": ["auto", "transparent", "opaque"] }
+      },
+      "pricing": {
+        "unit": "image",
+        "cost_source": "registry",
+        "cancel_policy": "free",
+        "usd": {},
+        "source": "",
+        "checked_at": ""
+      },
+      "own_eval": null
+    }
+  },
+  "profiles": {
+    "social-square-photo": {
+      "kind": "image",
+      "defaults": { "aspect": "1:1", "resolution": "standard" },
+      "models": ["openai-image"]
+    },
+    "draft-image": {
+      "kind": "image",
+      "defaults": { "aspect": "1:1", "resolution": "draft" },
+      "models": ["openai-image"]
+    }
+  }
+}
