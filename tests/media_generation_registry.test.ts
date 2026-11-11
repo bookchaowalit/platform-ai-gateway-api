@@ -225,3 +225,27 @@ test('SPEC-003 AC-04 video uses the profile default seconds when the request has
   assert.equal(result.selected[0].units, 5);
   assert.equal(result.selected[0].reserved_usd, 0.5);
 });
+
+test('SPEC-003 AC-05 every nested field is shape-checked', () => {
+  type M = MediaGenerationRegistry;
+  const cases: Array<[string, (r: M) => void, RegExp]> = [
+    ['usd array', (r) => { (r.models['a-photo'].pricing as { usd: unknown }).usd = [0.04]; }, /a-photo.*pricing\.usd/],
+    ['usd string', (r) => { (r.models['a-photo'].pricing as { usd: unknown }).usd = 'free'; }, /a-photo.*pricing\.usd/],
+    ['defaults missing', (r) => { delete (r.profiles['social-photo'] as { defaults?: unknown }).defaults; }, /social-photo.*defaults/],
+    ['defaults seconds string', (r) => { (r.profiles['social-photo'].defaults as { seconds: unknown }).seconds = '5'; }, /social-photo.*defaults/],
+    ['profile models not array', (r) => { (r.profiles['social-photo'] as { models: unknown }).models = 'a-photo'; }, /social-photo.*models/],
+    ['param_map entry string', (r) => { (r.models['a-photo'].param_map.aspect as Record<string, unknown>)['1:1'] = 'x'; }, /a-photo.*param_map\.aspect.*1:1/],
+    ['param_map entry array', (r) => { (r.models['a-photo'].param_map.resolution as Record<string, unknown>).standard = [1]; }, /a-photo.*param_map\.resolution.*standard/],
+    ['extra_params bad type', (r) => { (r.models['a-photo'].extra_params.seed as { type: unknown }).type = 'blob'; }, /a-photo.*extra_params.*seed/],
+    ['own_eval bad', (r) => { (r.models['a-photo'] as { own_eval: unknown }).own_eval = 'great'; }, /a-photo.*own_eval/],
+    ['output_hosts not array', (r) => { (r.providers['vendor-a'] as { output_hosts: unknown }).output_hosts = 'x'; }, /vendor-a.*output_hosts/],
+    ['providers not object', (r) => { (r as { providers: unknown }).providers = []; }, /providers/],
+  ];
+  for (const [name, mutate, pattern] of cases) {
+    const registry = fixture();
+    mutate(registry);
+    let problems: string[] = [];
+    assert.doesNotThrow(() => { problems = validateMediaGenerationRegistry(registry).problems; }, name);
+    assert.ok(problems.some((p) => pattern.test(p)), `${name}: ${JSON.stringify(problems)}`);
+  }
+});
