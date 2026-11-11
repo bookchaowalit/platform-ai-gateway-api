@@ -703,3 +703,100 @@ test('Codex: a provider rejection the worker knows was not charged settles 0 eve
   await h2.jobs.report(second.id, { lease_id: second.lease.lease_id, report_seq: 2, state: 'failed', error_code: 'provider_error' });
   assert.equal(attemptRow(h2, second.id).cost_usd, 0.04, 'unknown outcome still settles the reservation');
 });
+
+// ---------------------------------------------------------------- DoD review (P1a)
+
+function providerRegistry(limits: Partial<MediaGenerationRegistry['providers'][string]>): MediaGenerationRegistry {
+  const r = registry();
+  Object.assign(r.providers['vendor-a'], limits);
+  return r;
+}
+
+async function leaseFor(h: Harness, index: number) {
+  const m = h.sent[index];
+  return h.jobs.lease(m.attempt_id, { reason: m.reason, dispatch_no: m.dispatch_no, sig: m.sig });
+}
+
+test('DoD B2 max_in_flight: refused at the limit, the asking attempt never counts itself', async () => {
+  const h = harness({ AI_GATEWAY_MEDIA_MAX_ACTIVE_PER_SUBJECT: '10' }, { registry: providerRegistry({ max_concurrent: 10, max_in_flight: 2 }) });
+  for (let i = 0; i < 3; i += 1) await h.jobs.create(caller, body(), {});
+  assert.equal((await leaseFor(h, 0)).status, 200);
+  assert.equal((await leaseFor(h, 1)).status, 200, 'limit-1 in flight: granted');
+  const third = await leaseFor(h, 2);
+  assert.equal(third.status, 409);
+  assert.equal((third.body as { error: string }).error, 'no_slot');
+  // A recovering attempt (expired lease) is not blocked by its own row.
+  const solo = harness({}, { registry: providerRegistry({ max_in_flight: 1 }) });
+  await solo.jobs.create(caller, body(), {});
+  assert.equal((await leaseFor(solo, 0)).status, 200);
+  solo.clock.now += 121_000;
+  assert.equal((await leaseFor(solo, 0)).status, 200, 'its own leased row does not count against max_in_flight');
+});
+
+test('DoD B2 rpm: the per-provider window refuses the call over the limit', async () => {
+  const h = harness({ AI_GATEWAY_MEDIA_MAX_ACTIVE_PER_SUBJECT: '10' }, { registry: providerRegistry({ max_concurrent: 10, max_in_flight: 10, rpm: 2 }) });
+  for (let i = 0; i < 3; i += 1) await h.jobs.create(caller, body(), {});
+  assert.equal((await leaseFor(h, 0)).status, 200);
+  assert.equal((await leaseFor(h, 1)).status, 200);
+  assert.equal((await leaseFor(h, 2)).status, 409);
+  h.clock.now += 61_000;
+  assert.equal((await leaseFor(h, 2)).status, 200, 'the window slides');
+});
+
+test('DoD B2 two concurrent creates against a cap that fits one: exactly one is admitted', async () => {
+  const h = harness({ AI_GATEWAY_MEDIA_MONTHLY_BUDGET_USD: '0.05' });
+  const results = await Promise.all([h.jobs.create(caller, body(), {}), h.jobs.create({ subject: 'client-b' }, body(), {})]);
+  assert.deepEqual(results.map((r) => r.status).sort(), [202, 429]);
+});
+
+test('DoD B3 the ledger row carries the AC-16 fields and no content', async () => {
+  const h = harness();
+  await h.jobs.create(caller, body(), {});
+  const id = h.sent[0].attempt_id;
+  const lease = (await startLease(h)).body as { lease_id: string; attempt: { object_key_prefix: string } };
+  await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 1, state: 'submit_started' });
+  await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 2, state: 'completed', assets: [asset(lease.attempt.object_key_prefix)] });
+  const meta = JSON.parse(String((h.store.db.prepare("SELECT metadata_json FROM ai_run_telemetry WHERE route LIKE 'media.%'").get() as { metadata_json: string }).metadata_json));
+  for (const field of ['subject', 'kind', 'mode', 'profile', 'media_route', 'prompt_sha256', 'model_id', 'provider_id', 'n', 'bytes', 'attempt_status', 'error_code']) {
+    assert.ok(Object.hasOwn(meta, field), field);
+  }
+  assert.equal(meta.n, 1);
+  assert.equal(meta.bytes, 10);
+  assert.match(meta.prompt_sha256, /^[0-9a-f]{64}$/);
+  assert.doesNotMatch(JSON.stringify(meta), /MARKER_PROMPT_TEXT|images\//);
+});
+
+test('DoD N4 a subject named like an Object prototype key gets a normal answer, not a 500', async () => {
+  const h = harness({ AI_GATEWAY_MEDIA_SUBJECT_MODELS_JSON: JSON.stringify({ 'client-a': ['a-photo'] }) });
+  for (const subject of ['constructor', '__proto__', 'toString']) {
+    const result = await h.jobs.create({ subject }, body(), {});
+    assert.equal(result.status, 202, subject);
+  }
+});
+
+test('DoD N2 after the dispatch window a pending attempt that was already leased is not re-sent', async () => {
+  const h = harness();
+  h.failEnqueue.value = true;
+  await h.jobs.create(caller, body(), {});
+  const row = h.store.db.prepare('SELECT id, dispatch_no FROM media_attempts').get() as { id: string; dispatch_no: string };
+  h.store.db.prepare("UPDATE media_attempts SET first_leased_at = ? WHERE id = ?").run(new Date(h.clock.now).toISOString(), row.id);
+  h.failEnqueue.value = false;
+  h.clock.now += 31 * 60_000;
+  await h.jobs.housekeeping();
+  assert.equal(h.sent.length, 0);
+});
+
+test('DoD N5 rows older than 400 days are pruned; retention is clamped to the 30-day bucket rule', async () => {
+  const h = harness({ AI_GATEWAY_MEDIA_RETENTION_DAYS: '90' });
+  const { id, lease } = await submitStarted(h);
+  await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 2, state: 'completed', assets: [asset(lease.attempt.object_key_prefix)] });
+  const requestId = String(attemptRow(h, id).request_id);
+  h.clock.now += 31 * 86_400_000;
+  const view = await h.jobs.read(caller, requestId, { signGetUrl: async () => ({ url: 'https://x', expires_at: 'soon' }) });
+  assert.equal((view.body as { attempts: Array<{ assets: Array<{ state: string }> }> }).attempts[0].assets[0].state, 'expired', 'clamped to 30 days');
+  h.clock.now += 400 * 86_400_000;
+  await h.jobs.housekeeping();
+  for (const table of ['media_requests', 'media_attempts', 'media_assets']) {
+    assert.equal((h.store.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n, 0, table);
+  }
+});

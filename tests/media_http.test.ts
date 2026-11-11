@@ -326,3 +326,55 @@ test('Codex: dry_run uses the read bucket, and the catalog availability follows 
     await close(worker.server);
   }
 });
+
+import { createMediaHttp } from '../api/media/http.js';
+
+test('DoD B2 worker routes refuse "*" tokens, workspace callers and non-scoped methods; INTERNAL_RPM applies', async () => {
+  const store = openTelemetryStore(':memory:', loadTelemetryMigration({}));
+  const sentJson: Array<{ status: number }> = [];
+  const fakeRes = () => ({}) as ServerResponse;
+  const results: Array<Partial<import('../api/workspace_auth.js').WorkspaceAuthResult>> = [
+    { authorized: true, method: 'scoped', subject: 'w', scopes: ['*'] },
+    { authorized: true, method: 'legacy', subject: 'w', scopes: ['*'] },
+    { authorized: true, method: 'dev', subject: 'w', scopes: ['ai:media-worker'] },
+    { authorized: true, method: 'scoped', subject: 'w', scopes: ['ai:media-worker'], workspace: 'ws' },
+    { authorized: true, method: 'workspace-jwt', subject: 'w', scopes: ['ai:media-worker'] },
+  ];
+  for (const auth of results) {
+    let status = 0;
+    const media = createMediaHttp({
+      env: mediaEnv('https://worker.example'), db: store.db, record: () => undefined, registry: registry(),
+      authenticate: async () => auth as never, authenticateWorker: async () => auth as never,
+      readJson: async () => ({}), sendJson: (_res, s) => { status = s; sentJson.push({ status: s }); },
+      authFailure: (_res, r) => { status = r.status ?? 401; }, maxBodyBytes: 1024,
+    });
+    await media.handle({ headers: {} } as IncomingMessage, fakeRes(), '/internal/media/attempts/abc12345/lease', 'POST');
+    assert.equal(status, 403, JSON.stringify(auth));
+  }
+  let last = 0;
+  const ok = { authorized: true, method: 'scoped', subject: 'media-worker', scopes: ['ai:media-worker'] } as const;
+  const limited = createMediaHttp({
+    env: mediaEnv('https://worker.example', { AI_GATEWAY_MEDIA_INTERNAL_RPM: '1' }), db: store.db, record: () => undefined, registry: registry(),
+    authenticate: async () => ok as never, authenticateWorker: async () => ok as never,
+    readJson: async () => ({}), sendJson: (_res, s) => { last = s; }, authFailure: (_res, r) => { last = r.status ?? 401; }, maxBodyBytes: 1024,
+  });
+  await limited.handle({ headers: {} } as IncomingMessage, fakeRes(), '/internal/media/attempts/abc12345/lease', 'POST');
+  assert.equal(last, 403, 'first call reaches jobs.lease (bad signature)');
+  await limited.handle({ headers: {} } as IncomingMessage, fakeRes(), '/internal/media/attempts/abc12345/lease', 'POST');
+  assert.equal(last, 429);
+  store.close();
+});
+
+test('DoD N3 the worker URL must be https (http only for loopback)', async () => {
+  const store = openTelemetryStore(':memory:', loadTelemetryMigration({}));
+  const make = (url: string) => createMediaHttp({
+    env: mediaEnv(url), db: store.db, record: () => undefined, registry: registry(),
+    authenticate: async () => ({ authorized: false, subject: null, scopes: [], method: 'none' }) as never,
+    readJson: async () => ({}), sendJson: () => undefined, authFailure: () => undefined, maxBodyBytes: 1024,
+  });
+  const problemsOf = (url: string) => make(url).status({ authorized: true, subject: 'x', scopes: [], method: 'scoped' } as never).problems as string[];
+  assert.ok(problemsOf('http://worker.example').some((p) => /AI_GATEWAY_MEDIA_WORKER_URL/.test(p)));
+  assert.ok(!problemsOf('https://worker.example').some((p) => /AI_GATEWAY_MEDIA_WORKER_URL/.test(p)));
+  assert.ok(!problemsOf('http://127.0.0.1:8787').some((p) => /AI_GATEWAY_MEDIA_WORKER_URL/.test(p)));
+  store.close();
+});

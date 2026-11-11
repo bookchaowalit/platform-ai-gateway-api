@@ -342,3 +342,54 @@ test('Codex: the OpenAI adapter marks HTTP rejections as not charged and network
   await assert.rejects(network.submit({ provider_model: 'm', mapped_params: {}, kind: 'image', units: 1, payload: { prompt: 'p', format: 'png', n: 1, params: {} }, idempotency_key: 'a' }),
     (error: unknown) => error instanceof AdapterError && error.charged === undefined);
 });
+
+import { mock } from 'node:test';
+
+test('DoD N1 a final report refused with 429/401/403 is retried later, not dropped', async () => {
+  for (const status of [429, 401, 403, 408]) {
+    const { env: e, sent } = env();
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith('/lease')) return new Response(JSON.stringify(leaseBody()), { status: 200 });
+      const reportBody = JSON.parse(String(init?.body));
+      if (path.endsWith('/report') && reportBody.state === 'completed') return new Response('{}', { status });
+      return new Response('{"ok":true}', { status: 200 });
+    }) as typeof fetch;
+    const b = batch([await signedMessage()]);
+    await handleQueue(b.value, e, { fetch: fetchImpl, adapters: { fake: fakeAdapter(async () => [PNG]) } });
+    assert.deepEqual(b.acked, [0], String(status));
+    assert.equal(sent.length, 1, `${status}: delayed replacement`);
+  }
+});
+
+test('DoD B2 an R2 put failure reports failed instead of retrying the paid call', async () => {
+  const { env: e } = env({ MEDIA_BUCKET: { put: async () => { throw new Error('r2 down'); } } });
+  const gw = gateway((path) => path.endsWith('/lease') ? { status: 200, body: leaseBody() } : { status: 200, body: { ok: true } });
+  const b = batch([await signedMessage()]);
+  await handleQueue(b.value, e, { fetch: gw.fetchImpl, adapters: { fake: fakeAdapter(async () => [PNG]) } });
+  const reports = gw.calls.filter((c) => c.path.endsWith('/report')).map((c) => c.body);
+  assert.deepEqual(reports.map((r) => [r.state, r.error_code]), [['submit_started', undefined], ['failed', 'provider_error']]);
+  assert.deepEqual(b.retried, []);
+});
+
+test('DoD B2 the worker heartbeats every 60 s while the provider call runs', async () => {
+  mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+  try {
+    const { env: e } = env();
+    const gw = gateway((path) => path.endsWith('/lease') ? { status: 200, body: leaseBody() } : { status: 200, body: { ok: true } });
+    let finish: (value: Uint8Array[]) => void = () => undefined;
+    const slow = fakeAdapter(() => new Promise<Uint8Array[]>((resolve) => { finish = resolve; }));
+    const b = batch([await signedMessage()]);
+    const running = handleQueue(b.value, e, { fetch: gw.fetchImpl, adapters: { fake: slow } });
+    await new Promise((resolve) => setImmediate(resolve));
+    for (let i = 0; i < 3; i += 1) {
+      mock.timers.tick(60_000);
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    finish([PNG]);
+    await running;
+    assert.equal(gw.calls.filter((c) => c.path.endsWith('/heartbeat')).length, 3);
+  } finally {
+    mock.timers.reset();
+  }
+});

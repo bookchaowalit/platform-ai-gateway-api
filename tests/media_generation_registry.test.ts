@@ -249,3 +249,18 @@ test('SPEC-003 AC-05 every nested field is shape-checked', () => {
     assert.ok(problems.some((p) => pattern.test(p)), `${name}: ${JSON.stringify(problems)}`);
   }
 });
+
+test('DoD N7 an enabled model needs a real provider_model and at least one price', () => {
+  const placeholder = fixture();
+  placeholder.models['a-photo'].provider_model = 'set-on-setup-day';
+  assert.ok(validateMediaGenerationRegistry(placeholder).problems.some((p) => /a-photo.*provider_model/.test(p)));
+  const unpriced = fixture();
+  unpriced.models['a-photo'].pricing.usd = {};
+  unpriced.models['a-photo'].pricing.source = '';
+  unpriced.models['a-photo'].pricing.checked_at = '';
+  assert.ok(validateMediaGenerationRegistry(unpriced).problems.some((p) => /a-photo.*no prices/.test(p)));
+  const disabled = fixture();
+  disabled.models['a-photo'].enabled = false;
+  disabled.models['a-photo'].provider_model = 'set-on-setup-day';
+  assert.deepEqual(validateMediaGenerationRegistry(disabled).problems, [], 'disabled placeholders are fine');
+});

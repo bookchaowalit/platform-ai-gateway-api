@@ -117,3 +117,11 @@ test('SPEC-002 AC-09 scrubs image and tool payloads', () => {
   assert.ok(!serialized.includes('record_bill'));
   assert.ok(!serialized.includes('8450'));
 });
+
+test('SPEC-003 AC-16 scrubs signed R2/S3 URL query strings', () => {
+  const url = 'https://acct.r2.cloudflarestorage.com/ai-media/images/a.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIDMARKER%2F20261111%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=20261111T100000Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host&X-Amz-Signature=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+  const out = scrub(`fetch failed for ${url} done`);
+  assert.doesNotMatch(out, /AKIDMARKER|0123456789abcdef0123/);
+  assert.match(out, /done$/);
+  assert.doesNotMatch(scrub('X-Amz-Security-Token=FQoGZXIvYXdzEMARKER&x=1'), /FQoGZXIvYXdzEMARKER/);
+});
