@@ -85,6 +85,8 @@ interface AttemptRow {
   subject_key: string;
   model_id: string;
   provider_id: string;
+  provider_model: string;
+  adapter: string;
   status: AttemptStatus;
   dispatch_state: 'pending' | 'sent';
   dispatch_tries: number;
@@ -333,9 +335,9 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
     VALUES (?, ?, ?, ?, ?, 'single', 0, ?, ?, 'queued', ?, 0, ?, ?, ?, ?, ?)`);
   const insertPayload = db.prepare(`INSERT INTO media_request_payloads (request_id, ciphertext, nonce, key_id, created_at, purge_after) VALUES (?, ?, ?, ?, ?, ?)`);
   const insertAttempt = db.prepare(`INSERT INTO media_attempts
-    (id, request_id, subject_key, attempt_no, model_id, provider_id, status, dispatch_state, dispatch_tries, dispatch_no, next_dispatch_at,
+    (id, request_id, subject_key, attempt_no, model_id, provider_id, provider_model, adapter, status, dispatch_state, dispatch_tries, dispatch_no, next_dispatch_at,
      units, unit_price_usd, cost_source, cancel_policy, expected_outputs, reserved_usd, created_at, updated_at)
-    VALUES (?, ?, ?, 1, ?, ?, 'queued', 'pending', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    VALUES (?, ?, ?, 1, ?, ?, ?, ?, 'queued', 'pending', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
   function existingResponse(row: RequestRow): MediaResult {
     const attempts = (db.prepare('SELECT COUNT(*) AS n FROM media_attempts WHERE request_id = ?').get(row.id) as { n: number }).n;
@@ -422,7 +424,8 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
               const attemptId = randomId();
               attemptIds.push(attemptId);
               const pricing = registry.models[pick.model_id].pricing;
-              insertAttempt.run(attemptId, requestId, subjectKey, pick.model_id, pick.provider_id, randomId(12), iso(at),
+              insertAttempt.run(attemptId, requestId, subjectKey, pick.model_id, pick.provider_id, pick.provider_model,
+                registry.providers[pick.provider_id].adapter, randomId(12), iso(at),
                 pick.units, pick.unit_price_usd, pricing.cost_source, pricing.cancel_policy,
                 request.kind === 'image' ? (request.n ?? 1) : 1, pick.reserved_usd, iso(at), iso(at));
             }
@@ -618,7 +621,10 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
 
     // Everything below is synchronous: one transaction decides the lease.
     const payloadNeeded = reason === 'start' && (attempt.status === 'queued' || attempt.status === 'leased' || attempt.status === 'submit_started');
-    // No keyring (misconfiguration): refuse before granting anything, so the worker retries later.
+    // Kill switch: while media is off (or misconfigured) no new provider call may start; polls,
+    // webhooks and cancels of jobs already at the provider continue. Nothing is granted, so the
+    // worker retries later.
+    if (reason === 'start' && problems().length) return problem(503, 'media_disabled');
     if (payloadNeeded && !deps.payloadKeys) return problem(503, 'media_disabled');
     // The model or provider was removed by a later registry deploy: refuse before granting, retry later.
     if (!registry.models[attempt.model_id] || !registry.providers[attempt.provider_id]) return problem(503, 'media_disabled', { detail: 'model is not in the current registry' });
@@ -706,8 +712,8 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
           state: fresh.status,
           model_id: fresh.model_id,
           provider_id: fresh.provider_id,
-          provider_model: model.provider_model,
-          adapter: registry.providers[fresh.provider_id].adapter,
+          provider_model: fresh.provider_model || model.provider_model,
+          adapter: fresh.adapter || registry.providers[fresh.provider_id].adapter,
           ...(payload ? { mapped_params: mappedByModel[fresh.model_id] ?? {} } : {}),
           kind: request.kind,
           units: fresh.units,
@@ -844,7 +850,10 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
         const code = raw.error_code;
         if (typeof code !== 'string' || !ERROR_CODES.has(code)) return fail(400, 'invalid_request');
         if (code === 'submit_unknown') addFlag.run('submit_unknown', attempt.id, 'submit_unknown');
-        settleInside(attempt, 'failed', code, costIfClosedNow(attempt), 0);
+        if (raw.provider_charged !== undefined && raw.provider_charged !== false) return fail(400, 'invalid_request');
+        // The worker saw the provider refuse the job (an HTTP rejection), so nothing was generated or billed.
+        const notCharged = raw.provider_charged === false && code !== 'submit_unknown';
+        settleInside(attempt, 'failed', code, notCharged ? 0 : costIfClosedNow(attempt), 0);
         return { status: 200, body: { ok: true } };
       }
       case 'cancelled': {
@@ -943,6 +952,8 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
     running = true;
     try {
       const at = now();
+      // Cleanup always runs; dispatching new provider work only while media is on (kill switch).
+      const admissionOn = problems().length === 0;
       const ttl = Math.max(registry.policy.job_timeout_ms, registry.policy.lease_wait_max_ms) + TTL_MARGIN_MS;
       const due: string[] = [];
       for (const row of selectOpen.all() as unknown as AttemptRow[]) {
@@ -973,7 +984,7 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
         }
       }
       reclaimSlots.run(iso(at));
-      if (due.length) await dispatch(due);
+      if (due.length && admissionOn) await dispatch(due);
       purgePayloads.run(iso(at), iso(at.getTime() - PAYLOAD_KEEP_AFTER_DONE_MS));
       freeIdempotency.run(iso(at.getTime() - IDEMPOTENCY_WINDOW_MS));
       pruneCalls.run(iso(at.getTime() - 60_000));

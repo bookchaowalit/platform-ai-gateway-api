@@ -167,7 +167,9 @@ export function createMediaHttp(deps: MediaHttpDeps): MediaHttp {
     const scope = kind === 'video' ? 'ai:video' : 'ai:image';
     if (!hasScope(result, scope)) return deps.authFailure(res, { ...result, authorized: false, status: 403 });
     const key = result.workspace ? `${result.workspace}:${result.subject}` : String(result.subject);
-    const release = limited(res, kind === 'video' ? createVideo : createImage, key);
+    const dryRun = (parsed.body as { dry_run?: unknown } | null)?.dry_run === true;
+    // A dry run only prices: it uses the read bucket, not the create quota (AC-07).
+    const release = limited(res, dryRun ? reads : kind === 'video' ? createVideo : createImage, key);
     if (!release) return;
     try {
       const outside = problems().filter((p) => !jobs.problems().includes(p));
@@ -203,6 +205,15 @@ export function createMediaHttp(deps: MediaHttpDeps): MediaHttp {
     if (!release) return;
     try {
       const providers = new Set((env.AI_GATEWAY_MEDIA_PROVIDERS || '').split(',').map((p) => p.trim()).filter(Boolean));
+      const callerKey = result.workspace ? `${result.workspace}:${result.subject}` : String(result.subject ?? '');
+      let allowed: string[] | undefined;
+      try {
+        const parsedAllow = JSON.parse(env.AI_GATEWAY_MEDIA_SUBJECT_MODELS_JSON || '{}') as Record<string, unknown>;
+        const entry = Object.hasOwn(parsedAllow, callerKey) ? parsedAllow[callerKey] : undefined;
+        allowed = Array.isArray(entry) ? entry.filter((m): m is string => typeof m === 'string') : undefined;
+      } catch {
+        allowed = [];
+      }
       const valid = validateMediaGenerationRegistry(registry).problems.length === 0;
       const models = valid ? Object.entries(registry.models).filter(([, m]) => m.enabled).map(([id, m]) => ({
         id,
@@ -213,7 +224,7 @@ export function createMediaHttp(deps: MediaHttpDeps): MediaHttp {
         unit_prices_usd: m.pricing.usd,
         cost_source: m.pricing.cost_source,
         prices_checked_at: m.pricing.checked_at,
-        available: providers.has(m.provider),
+        available: providers.has(m.provider) && (allowed === undefined || allowed.includes(id)),
       })) : [];
       const profiles = valid ? Object.entries(registry.profiles).map(([id, p]) => ({ id, kind: p.kind, defaults: p.defaults, models: p.models })) : [];
       return deps.sendJson(res, 200, { registry_updated_at: valid ? registry.updated_at : null, models, profiles });

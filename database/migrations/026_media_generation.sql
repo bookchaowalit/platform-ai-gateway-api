@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS media_attempts (
     attempt_no INTEGER NOT NULL DEFAULT 1,
     model_id TEXT NOT NULL,
     provider_id TEXT NOT NULL,
+    -- Execution config frozen at admission (a registry deploy mid-job cannot change the model called).
+    provider_model TEXT NOT NULL DEFAULT '',
+    adapter TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL,
     dispatch_state TEXT NOT NULL DEFAULT 'pending' CHECK (dispatch_state IN ('pending', 'sent')),
     dispatch_tries INTEGER NOT NULL DEFAULT 0,

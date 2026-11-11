@@ -49,8 +49,11 @@ export interface MessageBatchLike<T> {
 export type AdapterErrorCode = 'content_policy' | 'provider_error' | 'invalid_input' | 'invalid_response';
 
 export class AdapterError extends Error {
-  constructor(readonly code: AdapterErrorCode) {
+  /** false when the provider refused the job (nothing generated or billed); undefined when unknown. */
+  readonly charged: false | undefined;
+  constructor(readonly code: AdapterErrorCode, charged?: boolean) {
     super(`media provider failed: ${code}`);
+    this.charged = charged === false ? false : undefined;
   }
 }
 
@@ -109,13 +112,16 @@ function bearer(request: Request): string {
 export async function handleFetch(request: Request, env: WorkerEnv): Promise<Response> {
   const { pathname } = new URL(request.url);
   if (pathname === '/healthz' && request.method === 'GET') {
-    let backlog: number | null = null;
+    // Fail closed: an unreadable backlog is not reported as healthy.
+    let backlog: number;
     try {
-      backlog = env.MEDIA_DLQ?.metrics ? (await env.MEDIA_DLQ.metrics()).backlogCount : null;
+      if (!env.MEDIA_DLQ?.metrics) throw new Error('no dlq metrics');
+      backlog = Number((await env.MEDIA_DLQ.metrics()).backlogCount);
+      if (!Number.isFinite(backlog)) throw new Error('bad backlog');
     } catch {
-      return json({ ok: false, dlq_backlog: null }, 503);
+      return json({ ok: false, dlq_backlog: null, reason: 'dlq_check_unavailable' }, 503);
     }
-    return json({ ok: !(backlog && backlog > 0), dlq_backlog: backlog }, backlog && backlog > 0 ? 503 : 200);
+    return json({ ok: backlog === 0, dlq_backlog: backlog }, backlog > 0 ? 503 : 200);
   }
   if (pathname === '/enqueue' && request.method === 'POST') {
     const token = bearer(request);
@@ -253,7 +259,8 @@ async function processMessage(message: SignedQueueMessage, env: WorkerEnv, deps:
       });
       outputs = result.outputs;
     } catch (error) {
-      await report({ state: 'failed', error_code: error instanceof AdapterError ? error.code : 'provider_error' });
+      const notCharged = error instanceof AdapterError && error.charged === false;
+      await report({ state: 'failed', error_code: error instanceof AdapterError ? error.code : 'provider_error', ...(notCharged ? { provider_charged: false } : {}) });
       return 'ack';
     }
 
@@ -293,7 +300,14 @@ export async function handleQueue(batch: MessageBatchLike<unknown>, env: WorkerE
       continue;
     }
     try {
-      const outcome = await processMessage(body, env, resolved);
+      let outcome: 'ack' | { delaySeconds: number };
+      try {
+        outcome = await processMessage(body, env, resolved);
+      } catch (error) {
+        // Gateway still down after the report retries: delayed replacement, never a DLQ-counted retry.
+        if (!(error instanceof GatewayDown)) throw error;
+        outcome = { delaySeconds: GATEWAY_DOWN_DELAY_S };
+      }
       if (outcome === 'ack') {
         item.ack();
         continue;

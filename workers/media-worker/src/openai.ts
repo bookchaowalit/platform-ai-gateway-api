@@ -54,9 +54,11 @@ export function createOpenAiImagesAdapter(options: { apiKey: string; fetchImpl?:
       }
       if (!response.ok) {
         const code = String((parsed as { error?: { code?: unknown } } | undefined)?.error?.code ?? '');
-        if (response.status === 400 && /moderation|content_policy|safety/.test(code)) throw new AdapterError('content_policy');
-        if (response.status === 400) throw new AdapterError('invalid_input');
-        throw new AdapterError('provider_error');
+        // A 4xx is a refusal: no image was generated, nothing is billed. A 5xx (e.g. a 504 after the
+        // work was done) is an unknown outcome, so the reservation stays settled conservatively.
+        if (response.status === 400 && /moderation|content_policy|safety/.test(code)) throw new AdapterError('content_policy', false);
+        if (response.status === 400) throw new AdapterError('invalid_input', false);
+        throw new AdapterError('provider_error', response.status < 500 ? false : undefined);
       }
       const data = (parsed as { data?: unknown } | undefined)?.data;
       if (!Array.isArray(data) || data.length === 0) throw new AdapterError('invalid_response');
