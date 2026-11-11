@@ -7,7 +7,7 @@ Standard: ADR-0004 — TDD + SDD (architecture-docs, `docs/architecture/decision
 | Field | Value |
 |---|---|
 | Spec ID / version | SPEC-003 / 1.0 |
-| Status | approved 2026-11-11 (owner); P1a in progress on branch `spec/003-media-generation`; Q1–Q5 open |
+| Status | approved 2026-11-11 (owner); P1a in progress on branch `spec/003-media-generation`; Q1–Q4 open, Q5 = option A |
 | Repository / path | bookchaowalit/platform-ai-gateway-api / `specs/003-media-generation/spec.md` |
 | Owner (maker) | Claude Code |
 | Reviewer (checker) | Fresh Claude reviewer session (no maker context), plus Codex review at Stop |
@@ -603,7 +603,7 @@ Worker tests run the worker module under the same runner with the Workers bindin
 | Q2 | Monthly media budget and first subjects with `ai:image` / `ai:video` | Spend | Owner | open — proposal: start with a small media cap, images only, video after the P1 smoke |
 | Q3 | Video access on each provider account (organisation verification, tiers, region) | P2 blocked per provider | Owner | open |
 | Q4 | Provider data terms (retention, training on inputs) for each provider before `enabled: true`; `terms_checked_at` records it | Personal-data and client exposure | Owner | open |
-| Q5 | Where `media-worker` runs and where its secrets live (§4.6 option A: Cloudflare Worker + Wrangler secrets, needs an `AGENTS.md` rule change; option B: Railway service, keeps the rule). For A, base64 decoding and multipart upload may exceed the Workers Free CPU limit per invocation, so Workers Paid may be needed | P1 worker runtime and the secret-store rule | Owner | open — proposal A, measured in P1 with the smallest image model first |
+| Q5 | Where `media-worker` runs and where its secrets live (§4.6 option A: Cloudflare Worker + Wrangler secrets, needs an `AGENTS.md` rule change; option B: Railway service, keeps the rule). For A, base64 decoding and multipart upload may exceed the Workers Free CPU limit per invocation, so Workers Paid may be needed | P1 worker runtime and the secret-store rule | Owner | **resolved 2026-11-11: option A** (owner reply "A: Cloudflare Worker"); `AGENTS.md` secret-store line changed accordingly; Workers Free CPU still to be measured in P1a |
 | R6 | Thai text inside generated images is often wrong | Bad Thai visuals | Maker | `thai-text-poster` profile is compare-only until a model reaches ≥ 80 % human accept on 20 votes; consumers render Thai text as overlay meanwhile |
 | R7 | Likeness, trademarks, client logos; disclosure of AI content | Legal / reputation | Owner | Provider policies + `ai_generated` flag; client-facing use needs client consent in the engagement |
 | R8 | Single gateway replica with SQLite is the state bottleneck | Admission stops while the gateway is down; queued work waits | Maker | Work and state survive; Neon move path in §4.4 when the thresholds are hit |

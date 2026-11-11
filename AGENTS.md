@@ -1,7 +1,8 @@
 # Agent Instructions
 
 - Human-facing replies are in Thai by default; keep code, commands and identifiers as-is.
-- Never print, commit or copy secrets. Railway variables are the only secret store.
+- Never print, commit or copy secrets. Railway variables (gateway) and Wrangler secrets
+  (`workers/media-worker`, SPEC-003 option A) are the only secret stores; Infisical is the source both are set from.
 - Run `npm test` and `npm run build` before committing.
 - Merging to `main` deploys production (Railway GitHub source + Wait for CI); verify `/healthz`
   afterwards. Do not `railway up` from a working tree.
