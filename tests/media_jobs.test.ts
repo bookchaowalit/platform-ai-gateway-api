@@ -557,3 +557,47 @@ test('Codex: a provider-priced completion without a provider cost settles the fu
   assert.equal(attemptRow(h, id).cost_usd, 0.08);
   assert.match(String(attemptRow(h, id).flags), /provider_cost_missing/);
 });
+
+test('Codex: pricing policy is frozen on the attempt at admission, not read from a later registry', async () => {
+  const h = harness();
+  await h.jobs.create(caller, body(), {});
+  const id = h.sent[0].attempt_id;
+  const lease = (await startLease(h)).body as { lease_id: string; attempt: { object_key_prefix: string } };
+  await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 1, state: 'submit_started' });
+  const later = registry();
+  later.models['a-photo'].pricing.cost_source = 'provider';
+  const redeployed = createMediaJobs({
+    db: h.store.db, record: (e) => h.store.record(e), registry: later, env: h.env, payloadKeys: PAYLOAD_KEYS.ok ? PAYLOAD_KEYS.keys : undefined,
+    queueKey: QUEUE_KEY, now: () => new Date(h.clock.now), enqueue: async () => undefined,
+  });
+  await redeployed.report(id, { lease_id: lease.lease_id, report_seq: 2, state: 'completed', assets: [asset(lease.attempt.object_key_prefix)], provider_cost_usd: 3 });
+  assert.equal(attemptRow(h, id).cost_usd, 0.04, 'registry-priced at admission, so the provider cost is ignored');
+});
+
+test('Codex: completed reports must carry exactly n image outputs', async () => {
+  const h = harness();
+  await h.jobs.create(caller, body({ n: 2 }), {});
+  const id = h.sent[0].attempt_id;
+  const lease = (await startLease(h)).body as { lease_id: string; attempt: { object_key_prefix: string } };
+  await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 1, state: 'submit_started' });
+  const one = await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 2, state: 'completed', assets: [asset(lease.attempt.object_key_prefix)] });
+  assert.equal(one.status, 400);
+  const three = await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 3, state: 'completed', assets: [1, 2, 3].map((i) => ({ ...asset(lease.attempt.object_key_prefix), object_key: `${lease.attempt.object_key_prefix}${i}.png` })) });
+  assert.equal(three.status, 400);
+  const two = await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 4, state: 'completed', assets: [1, 2].map((i) => ({ ...asset(lease.attempt.object_key_prefix), object_key: `${lease.attempt.object_key_prefix}${i}.png` })) });
+  assert.equal(two.status, 200);
+});
+
+test('Codex: a lease without a payload keyring is a retryable 503, not a crash or a closed attempt', async () => {
+  const h = harness();
+  await h.jobs.create(caller, body(), {});
+  const keyless = createMediaJobs({
+    db: h.store.db, record: (e) => h.store.record(e), registry: registry(), env: h.env, payloadKeys: undefined,
+    queueKey: QUEUE_KEY, now: () => new Date(h.clock.now), enqueue: async () => undefined,
+  });
+  const message = h.sent[0];
+  const result = await keyless.lease(message.attempt_id, { reason: 'start', dispatch_no: message.dispatch_no, sig: message.sig });
+  assert.equal(result.status, 503);
+  assert.equal(attemptRow(h, message.attempt_id).status, 'queued');
+  assert.equal(attemptRow(h, message.attempt_id).lease_id, null);
+});
