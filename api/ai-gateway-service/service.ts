@@ -273,12 +273,15 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
     });
   };
 
+  const workerAuth = createScopedTokenAuthenticator(env.API_TOKENS_JSON);
   const media = createMediaHttp({
     env,
     db: store.db,
     record: (event) => store.record(event),
     registry: options.mediaRegistry,
     authenticate: async (req, scope) => auth.authenticate(req, scope),
+    // Worker routes take the scoped static tokens whatever the public auth profile is.
+    authenticateWorker: async (req, scope) => workerAuth.authenticate(req, scope),
     readJson: readJsonBody,
     sendJson,
     authFailure,

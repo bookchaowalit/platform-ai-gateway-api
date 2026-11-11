@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS media_attempts (
     cost_usd REAL CHECK (cost_usd IS NULL OR cost_usd >= 0),
     overspend_usd REAL NOT NULL DEFAULT 0,
     flags TEXT NOT NULL DEFAULT '[]',
+    lease_history TEXT NOT NULL DEFAULT '[]',
     cancel_requested_at TEXT,
     error_code TEXT,
     latency_ms REAL,

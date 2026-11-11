@@ -32,6 +32,8 @@ export interface MediaHttpDeps {
   record: (event: AiTelemetryEvent) => void;
   registry?: MediaGenerationRegistry;
   authenticate: (req: IncomingMessage, scope: string) => Promise<WorkspaceAuthResult>;
+  /** Scoped static tokens only, used for /internal/media/* under every public auth profile. */
+  authenticateWorker?: (req: IncomingMessage, scope: string) => Promise<WorkspaceAuthResult>;
   readJson: (req: IncomingMessage, maxBytes: number) => Promise<unknown>;
   sendJson: (res: ServerResponse, status: number, body: unknown, headers?: Record<string, string>) => void;
   authFailure: (res: ServerResponse, result: WorkspaceAuthResult) => void;
@@ -187,7 +189,8 @@ export function createMediaHttp(deps: MediaHttpDeps): MediaHttp {
     if (!release) return;
     try {
       if (!signer.ok) return send(res, { status: 503, body: { error: 'media_disabled', message: 'media generation is not configured' } });
-      return send(res, await jobs.read(callerOf(result), id, signer.signer));
+      const kinds = (['image', 'video'] as const).filter((kind) => hasScope(result, `ai:${kind}`));
+      return send(res, await jobs.read(callerOf(result), id, signer.signer, kinds));
     } finally {
       release();
     }
@@ -220,7 +223,7 @@ export function createMediaHttp(deps: MediaHttpDeps): MediaHttp {
   }
 
   async function handleInternal(req: IncomingMessage, res: ServerResponse, id: string, action: string): Promise<void> {
-    const result = await deps.authenticate(req, 'ai:media-worker');
+    const result = await (deps.authenticateWorker ?? deps.authenticate)(req, 'ai:media-worker');
     // Exact scope on a scoped static token only: no '*' tokens, no workspace or identity JWTs (AC-02).
     if (!result.authorized || result.method !== 'scoped' || result.workspace || !hasScope(result, 'ai:media-worker')) {
       return deps.authFailure(res, { ...result, authorized: false, status: result.status === 401 ? 401 : 403 });
@@ -290,8 +293,8 @@ export function createMediaHttp(deps: MediaHttpDeps): MediaHttp {
 
   function startHousekeeping(intervalMs: number): () => void {
     if (!(intervalMs > 0)) return () => undefined;
+    // Runs even while admission is off: open jobs must still time out, reservations close and payloads purge.
     const timer = setInterval(() => {
-      if (jobs.problems().length) return;
       jobs.housekeeping().catch((error: unknown) => {
         deps.log?.({ ts: now().toISOString(), event: 'media.housekeeping_failed', error_name: error instanceof Error ? error.name : 'unknown' });
       });

@@ -73,7 +73,7 @@ export interface MediaJobs {
   lease(attemptId: string, body: unknown): Promise<MediaResult>;
   report(attemptId: string, body: unknown): Promise<MediaResult>;
   heartbeat(attemptId: string, body: unknown): Promise<MediaResult>;
-  read(caller: MediaCaller, requestId: string, signer: MediaSigner): Promise<MediaResult>;
+  read(caller: MediaCaller, requestId: string, signer: MediaSigner, kinds?: ReadonlyArray<MediaKind>): Promise<MediaResult>;
   housekeeping(): Promise<void>;
 }
 
@@ -107,6 +107,7 @@ interface AttemptRow {
   reserved_usd: number;
   cost_usd: number | null;
   flags: string;
+  lease_history: string;
   cancel_requested_at: string | null;
   error_code: string | null;
   created_at: string;
@@ -574,8 +575,10 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
   const pruneCalls = db.prepare('DELETE FROM media_provider_calls WHERE called_at < ?');
   const insertSlot = db.prepare('INSERT INTO media_provider_slots (provider_id, lease_id, attempt_id, deadline) VALUES (?, ?, ?, ?)');
   const updateSlotDeadline = db.prepare('UPDATE media_provider_slots SET deadline = ? WHERE attempt_id = ?');
+  // lease_history keeps the last 8 lease ids so a late report from a recovered lease can be matched (rule 3).
   const grantLease = db.prepare(`UPDATE media_attempts SET status = ?, lease_id = ?, lease_deadline = ?, lease_started_at = ?, report_seq = 0,
-      first_leased_at = COALESCE(first_leased_at, ?), lease_recoveries = ?, poll_count = ?, updated_at = ? WHERE id = ?`);
+      first_leased_at = COALESCE(first_leased_at, ?), lease_recoveries = ?, poll_count = ?, updated_at = ?, lease_history = ?
+      WHERE id = ?`);
   const clearExpiredLease = db.prepare(`UPDATE media_attempts SET status = ?, lease_id = NULL, lease_deadline = NULL, lease_started_at = NULL,
       lease_recoveries = ?, updated_at = ? WHERE id = ? AND lease_id = ?`);
   const selectPayload = db.prepare('SELECT * FROM media_request_payloads WHERE request_id = ?');
@@ -657,7 +660,8 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
           const deadline = iso(at.getTime() + LEASE_MS);
           const nextStatus: AttemptStatus = attempt.status === 'queued' ? 'leased' : attempt.status;
           const polls = attempt.poll_count + (reason === 'poll' || reason === 'webhook' ? 1 : 0);
-          grantLease.run(nextStatus, leaseId, deadline, iso(at), iso(at), attempt.lease_recoveries, polls, iso(at), attempt.id);
+          const history = [...(JSON.parse(attempt.lease_history || '[]') as string[]), leaseId].slice(-8);
+          grantLease.run(nextStatus, leaseId, deadline, iso(at), iso(at), attempt.lease_recoveries, polls, iso(at), JSON.stringify(history), attempt.id);
           if (startKind) {
             insertSlot.run(attempt.provider_id, leaseId, attempt.id, deadline);
             insertCall.run(attempt.provider_id, iso(at));
@@ -777,9 +781,11 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
     const attempt = selectAttempt.get(attemptId) as unknown as AttemptRow;
     const leaseMatches = attempt.lease_id !== null && constantTimeEqual(attempt.lease_id, leaseId);
     if (TERMINAL.has(attempt.status)) {
-      // Rule 3: absorbing. A completed output from the attempt's own lease, after it was closed
-      // timeout/submit_unknown, is kept and linked; cost is never settled again.
-      if (leaseMatches) {
+      // Rule 3: absorbing. A completed output from any lease this attempt ever held (lease_history
+      // covers leases cleared by recovery), after it was closed timeout/submit_unknown, is kept and
+      // linked; cost is never settled again.
+      const history = JSON.parse(attempt.lease_history || '[]') as string[];
+      if (leaseMatches || history.some((id) => constantTimeEqual(id, leaseId))) {
         addFlag.run('late_report', attempt.id, 'late_report');
         if (state === 'completed' && attempt.status === 'failed' && (attempt.error_code === 'timeout' || attempt.error_code === 'submit_unknown')) {
           const assets = validAssets(raw.assets, prefix, attempt.expected_outputs);
@@ -788,6 +794,10 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
         }
       }
       return fail(409, 'terminal');
+    }
+    if (leaseMatches && !leaseExpired(attempt, at) && seq === attempt.report_seq && state === 'submit_started' && attempt.status === 'submit_started') {
+      // The worker retried a report whose response was lost: already applied, answer as before.
+      return { status: 200, body: { ok: true, replay: true } };
     }
     if (!leaseMatches || leaseExpired(attempt, at) || seq <= attempt.report_seq) return fail(409, 'stale_report');
     switch (state) {
@@ -868,11 +878,13 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
 
   const selectAssets = db.prepare('SELECT * FROM media_assets WHERE attempt_id = ? ORDER BY created_at, id');
 
-  async function read(caller: MediaCaller, requestId: string, signer: MediaSigner): Promise<MediaResult> {
+  async function read(caller: MediaCaller, requestId: string, signer: MediaSigner, kinds?: ReadonlyArray<MediaKind>): Promise<MediaResult> {
     const notFound = problem(404, 'not_found');
     if (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{8,64}$/.test(requestId)) return notFound;
     const request = selectRequest.get(requestId) as RequestRow | undefined;
     if (!request || !constantTimeEqual(request.subject_key, aiBudgetKey(caller))) return notFound;
+    // The caller's token must carry the scope of this request's kind (same body as not found).
+    if (kinds && !kinds.includes(request.kind)) return notFound;
     const at = now();
     const attempts = selectAttemptsOfRequest.all(requestId) as unknown as AttemptRow[];
     const view = [];

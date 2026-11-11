@@ -11,7 +11,8 @@ export const IDENTITY_AUDIENCE = 'ai-api';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const JWT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 // Identity scope names for the gateway's route scopes (identity has no generic api:read).
-const ROUTE_SCOPE: Record<string, string> = { 'api:read': 'ai:read', 'ai:generate': 'ai:generate' };
+// SPEC-003: media scopes map 1:1; ai:media-worker is deliberately absent (worker routes take static tokens only).
+const ROUTE_SCOPE: Record<string, string> = { 'api:read': 'ai:read', 'ai:generate': 'ai:generate', 'ai:image': 'ai:image', 'ai:video': 'ai:video' };
 
 export interface IdentityAuthenticator {
   configurationError: string | null;

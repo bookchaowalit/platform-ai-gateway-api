@@ -270,7 +270,8 @@ test('Codex: identity JWTs with ai:image can create media; the worker still uses
     const message = worker.messages[0];
     const lease = await call(gateway.url, `/internal/media/attempts/${message.attempt_id}/lease`, WORKER_TOKEN, { body: { reason: message.reason, dispatch_no: message.dispatch_no, sig: message.sig } });
     assert.equal(lease.status, 200);
-    assert.equal((await call(gateway.url, `/internal/media/attempts/${message.attempt_id}/lease`, await token('ai:media-worker'), { body: {} })).status, 403, 'JWTs never reach worker routes');
+    const jwtOnWorker = (await call(gateway.url, `/internal/media/attempts/${message.attempt_id}/lease`, await token('ai:media-worker'), { body: {} })).status;
+    assert.ok(jwtOnWorker === 401 || jwtOnWorker === 403, 'JWTs never reach worker routes');
   } finally {
     await gateway.stop();
     await close(worker.server);
