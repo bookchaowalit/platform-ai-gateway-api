@@ -19,7 +19,7 @@
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { AI_GATEWAY_CONTRACT, AiGatewayError, generateAi, getAiGatewayStatus, type AiTelemetryEvent } from '../ai_gateway.js';
+import { AI_GATEWAY_CONTRACT, AiGatewayError, generateAi, getAiGatewayStatus, subjectModelsConfigError, type AiTelemetryEvent } from '../ai_gateway.js';
 import { AiBudgetError, createAiBudgetGuard, getAiBudgetStatus, subjectBudgetConfigError } from '../ai_budget.js';
 import { aiRateLimitHeaders, createAiRateLimiter, type AiRateLimiter } from '../ai_rate_limit.js';
 import { createScopedTokenAuthenticator, type AuthResult } from '../auth.js';
@@ -112,6 +112,8 @@ export function serviceConfigurationProblems(env: NodeJS.ProcessEnv): string[] {
     const budgetError = subjectBudgetConfigError(env);
     if (budgetError) problems.push(budgetError);
   }
+  const subjectModelsError = subjectModelsConfigError(env);
+  if (subjectModelsError) problems.push(subjectModelsError);
   if ((env.API_TOKEN || '').trim()) {
     problems.push('API_TOKEN (legacy full-access token) must not be set for the hosted AI gateway');
   }
@@ -362,6 +364,7 @@ export function createAiGatewayService(options: AiGatewayServiceOptions): AiGate
       try {
         const generated = await generateAi(body, env, {
           privateRouteSubject: privateRouteSubject(result),
+          modelSubject: privateRouteSubject(result),
           budgetGuard,
           attemptAdmission: shared?.forCaller(result.authorization!),
           recordTelemetry: (event) => store.record(withSubject(event, subject, result.workspace)),

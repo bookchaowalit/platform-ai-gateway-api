@@ -675,7 +675,7 @@ test('SPEC-002 AC-12 status advertises capabilities', async () => {
   }));
   try {
     const status = await (await fetch(`${gateway.url}/api/ai/status`, { headers: { Authorization: `Bearer ${BOTH_TOKEN}` } })).json().then(asAny);
-    assert.deepEqual(status.capabilities, { tools: true, image_input: true, json_schema: true, private_routes: 2, private_routes_config: 'ok' });
+    assert.deepEqual(status.capabilities, { tools: true, image_input: true, json_schema: true, subject_models: 0, private_routes: 2, private_routes_config: 'ok' });
     assert.equal(status.limits.max_image_bytes, 1_048_576);
     assert.equal(status.limits.max_total_image_bytes, 2_621_440);
     const reader = await (await fetch(`${gateway.url}/api/ai/status`, { headers: { Authorization: `Bearer ${READ_TOKEN}` } })).json().then(asAny);
@@ -731,4 +731,44 @@ test('SPEC-002 AC-08 subject budgets require the bounded error cost policy and v
   assert.deepEqual(serviceConfigurationProblems({ ...env, AI_GATEWAY_ERROR_COST_POLICY: 'bounded' }), []);
   assert.ok(serviceConfigurationProblems({ ...env, AI_GATEWAY_ERROR_COST_POLICY: 'bounded', AI_GATEWAY_SUBJECT_BUDGETS_JSON: '{bad' })
     .some((p) => /AI_GATEWAY_SUBJECT_BUDGETS_JSON/.test(p)));
+});
+
+test('SPEC-004 subject models apply to scoped tokens only, never to a JWT with the same sub', async () => {
+  const issuer = 'https://identity.example.test';
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const keys = createLocalJWKSet({ keys: [{ ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256' }] });
+  const person = randomUUID();
+  const identityToken = async (sub: string, scope: string) => {
+    const now = Math.floor(Date.now() / 1000);
+    return new SignJWT({ ws: randomUUID(), scope, jti: randomUUID() }).setProtectedHeader({ alg: 'RS256', kid: 'k1' })
+      .setIssuer(issuer).setAudience('ai-api').setSubject(sub).setIssuedAt(now).setExpirationTime(now + 900).sign(privateKey);
+  };
+  const sol = { model: 'gpt-6.1-sol', input_usd_per_1k: 0.002, output_usd_per_1k: 0.008 };
+  const upstream = await startUpstream((body, res) => json(res, 200, okCompletion(body.model)));
+  const gateway = await startGateway(gatewayEnv(upstream.url, {
+    AI_GATEWAY_AUTH_PROFILE: 'identity',
+    AI_GATEWAY_IDENTITY_ISSUER: issuer,
+    AI_GATEWAY_SUBJECT_MODELS_JSON: JSON.stringify({ 'ev3-full': { fast: sol, balanced: sol, quality: sol }, [person]: { fast: sol, balanced: sol, quality: sol } }),
+  }), ':memory:', keys);
+  try {
+    assert.equal((await post(gateway.url, BOTH_TOKEN, baseRequest)).status, 200);
+    assert.equal((await post(gateway.url, GENERATE_TOKEN, baseRequest)).status, 200);
+    assert.equal((await post(gateway.url, await identityToken(person, 'ai:generate'), baseRequest)).status, 200);
+    assert.deepEqual(upstream.calls.map((call) => call.body.model), ['gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-luna']);
+    const own = await (await fetch(`${gateway.url}/api/ai/status`, { headers: { Authorization: `Bearer ${BOTH_TOKEN}` } })).json().then(asAny);
+    assert.equal(own.capabilities.subject_models, 3);
+    assert.equal(own.models.quality, 'gpt-6.1-sol');
+    const jwt = await (await fetch(`${gateway.url}/api/ai/status`, { headers: { Authorization: `Bearer ${await identityToken(person, 'ai:read')}` } })).json().then(asAny);
+    assert.equal(jwt.capabilities.subject_models, 0);
+    assert.equal(jwt.models.quality, 'gpt-6-luna');
+  } finally {
+    await gateway.stop();
+    await close(upstream.server);
+  }
+});
+
+test('SPEC-004 AC-06 a malformed subject model mapping is a startup problem', () => {
+  const env = gatewayEnv('http://127.0.0.1:9', { AI_GATEWAY_SUBJECT_MODELS_JSON: '{bad' });
+  assert.ok(serviceConfigurationProblems(env).includes('AI_GATEWAY_SUBJECT_MODELS_JSON is invalid'));
+  assert.deepEqual(serviceConfigurationProblems({ ...env, AI_GATEWAY_SUBJECT_MODELS_JSON: '' }), []);
 });
