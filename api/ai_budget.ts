@@ -116,6 +116,24 @@ function config(env: NodeJS.ProcessEnv): {
   };
 }
 
+/** SPEC-003 §4.7 rule 1: media reservations are rows of non-terminal attempts, so they survive restarts. */
+const MEDIA_OPEN_STATUSES = "('queued', 'leased', 'submit_started', 'submitted')";
+
+export function openMediaReservedUsd(db: SqliteDatabase, key?: string): number {
+  try {
+    const row = key === undefined
+      ? db.prepare(`SELECT COALESCE(SUM(reserved_usd), 0) AS reserved FROM media_attempts WHERE status IN ${MEDIA_OPEN_STATUSES}`).get()
+      : db.prepare(`SELECT COALESCE(SUM(reserved_usd), 0) AS reserved FROM media_attempts WHERE status IN ${MEDIA_OPEN_STATUSES} AND subject_key = ?`).get(key);
+    const reserved = Number(row?.reserved || 0);
+    if (!Number.isFinite(reserved)) throw new Error('non-finite reservation');
+    return reserved;
+  } catch (error) {
+    // A store without the media migration has no media reservations.
+    if (error instanceof Error && /no such table: media_attempts/.test(error.message)) return 0;
+    throw new AiBudgetError('AI media reservation signal is unavailable', 'cost_signal_unavailable');
+  }
+}
+
 function querySpend(db: SqliteDatabase, bounds = periodBounds()): { spent: number; unknown: number } {
   try {
     const row = db.prepare(
@@ -280,7 +298,7 @@ export function getAiBudgetStatus(db: SqliteDatabase, env: NodeJS.ProcessEnv = p
   const subscriptionCommitted = Number(settings.subscriptionMonthlyUsd.toFixed(8));
   const storageCommitted = Number(settings.storageMonthlyUsd.toFixed(8));
   const committed = Number((subscriptionCommitted + storageCommitted).toFixed(8));
-  const active = (reservationState.get(db as object) || 0) + gpu.reserved;
+  const active = (reservationState.get(db as object) || 0) + gpu.reserved + openMediaReservedUsd(db);
   const totalSpent = spend.spent + gpu.spent;
   const remaining = Number((effective - committed - totalSpent - active).toFixed(8));
   const unknownCostEvents = spend.unknown + gpu.unknown;
@@ -372,7 +390,7 @@ function reserveSubject(db: SqliteDatabase, caller: AiBudgetCaller, limit: numbe
   subjectReservationState.set(db as object, reservations);
   const estimate = estimatedCostUsd || 0;
   const current = reservations.get(key) || 0;
-  if (spend.spent + current + estimate > limit + 1e-9) {
+  if (spend.spent + current + openMediaReservedUsd(db, key) + estimate > limit + 1e-9) {
     throw new AiBudgetError('AI subject monthly budget exceeded', 'request_would_exceed_subject_budget');
   }
   reservations.set(key, current + estimate);
@@ -440,4 +458,59 @@ function createGlobalGuard(db: SqliteDatabase, env: NodeJS.ProcessEnv, settings:
       };
     },
   };
+}
+
+/**
+ * SPEC-003 §4.7 rules 1–2: may `amountUsd` of new media reservations be admitted for this caller?
+ * Checks the global budget (settled + text in-flight + open media), the caller's subject budget,
+ * and the media cap (media.* ledger rows + open media). Synchronous so the caller can run it inside
+ * the same BEGIN IMMEDIATE transaction that inserts the attempts.
+ */
+export function checkMediaBudget(
+  db: SqliteDatabase,
+  env: NodeJS.ProcessEnv,
+  caller: AiBudgetCaller,
+  amountUsd: number,
+): { ok: true } | { ok: false; reason: string } {
+  if (!Number.isFinite(amountUsd) || amountUsd < 0) return { ok: false, reason: 'invalid_cost_estimate' };
+  let settings: ReturnType<typeof config>;
+  let budgets: Map<string, number> | null;
+  try {
+    settings = config(env);
+    budgets = subjectBudgets(env);
+  } catch (error) {
+    return { ok: false, reason: error instanceof AiBudgetError ? error.reason : 'invalid_configuration' };
+  }
+  const mediaCap = parseNumber(env.AI_GATEWAY_MEDIA_MONTHLY_BUDGET_USD, null);
+  if (mediaCap === null || mediaCap < 0) return { ok: false, reason: 'media_budget_not_configured' };
+  try {
+    const bounds = periodBounds();
+    const mediaSpent = Number((db.prepare(
+      `SELECT COALESCE(SUM(estimated_cost_usd), 0) AS spent FROM ai_run_telemetry
+        WHERE created_at >= ? AND created_at < ? AND route LIKE 'media.%'`,
+    ).get(bounds.start, bounds.end) || {}).spent || 0);
+    if (mediaSpent + openMediaReservedUsd(db) + amountUsd > mediaCap + 1e-9) return { ok: false, reason: 'request_would_exceed_media_budget' };
+
+    if (settings.budget !== null) {
+      const status = getAiBudgetStatus(db, env);
+      if (status.decision !== 'allow' || status.effective_budget_usd === null || status.spent_usd === null) return { ok: false, reason: status.reason };
+      if (status.spent_usd + status.active_reserved_usd + (status.committed_usd ?? 0) + amountUsd > status.effective_budget_usd + 1e-9) {
+        return { ok: false, reason: 'request_would_exceed_monthly_budget' };
+      }
+    }
+
+    const key = aiBudgetKey(caller);
+    const limit = budgets?.get(key);
+    if (limit !== undefined) {
+      const spend = querySubjectSpend(db, caller, bounds);
+      if (spend.unknown > 0 && !settings.allowUnmetered) return { ok: false, reason: 'unmetered_api_events' };
+      const textReserved = subjectReservationState.get(db as object)?.get(key) || 0;
+      if (spend.spent + textReserved + openMediaReservedUsd(db, key) + amountUsd > limit + 1e-9) {
+        return { ok: false, reason: 'request_would_exceed_subject_budget' };
+      }
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: error instanceof AiBudgetError ? error.reason : 'cost_signal_unavailable' };
+  }
 }
