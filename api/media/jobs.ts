@@ -220,7 +220,8 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
     }
   }
 
-  const usableModels = Object.entries(registry.models ?? {})
+  // Only look inside the registry once it passed validation; a malformed one keeps media off.
+  const usableModels = registryProblems.length ? [] : Object.entries(registry.models)
     .filter(([, model]) => model.enabled && providersAvailable.has(model.provider) && registry.providers[model.provider]);
 
   function problems(): string[] {
@@ -490,12 +491,35 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
     updateRequestTotals.run(requestId, deriveStatus(attempts), iso(now()), requestId);
   }
 
-  const closeAttempt = db.prepare(`UPDATE media_attempts SET status = ?, error_code = ?, cost_usd = ?, overspend_usd = ?, lease_id = NULL,
+  // lease_id is kept on terminal rows so a late report can still be matched to its lease (rule 3).
+  const closeAttempt = db.prepare(`UPDATE media_attempts SET status = ?, error_code = ?, cost_usd = ?, overspend_usd = ?,
       lease_deadline = NULL, lease_started_at = NULL, latency_ms = ?, updated_at = ? WHERE id = ? AND status NOT IN ('completed', 'failed', 'cancelled', 'expired')`);
+  let savepointDepth = 0;
+
+  /** Run fn atomically: a SAVEPOINT nests inside an open transaction and works outside one too. */
+  function atomically<T>(fn: () => T): T {
+    const name = `media_sp_${savepointDepth += 1}`;
+    db.exec(`SAVEPOINT ${name}`);
+    try {
+      const result = fn();
+      db.exec(`RELEASE ${name}`);
+      return result;
+    } catch (error) {
+      db.exec(`ROLLBACK TO ${name}`);
+      db.exec(`RELEASE ${name}`);
+      throw error;
+    } finally {
+      savepointDepth -= 1;
+    }
+  }
   const deleteSlot = db.prepare('DELETE FROM media_provider_slots WHERE attempt_id = ?');
 
   /** Move a non-terminal attempt to a terminal state and write its one ledger row. Returns false when it was already terminal. */
   function settle(attempt: AttemptRow, status: 'completed' | 'failed' | 'cancelled', errorCode: string | null, cost: number, overspend = 0): boolean {
+    return atomically(() => settleInside(attempt, status, errorCode, cost, overspend));
+  }
+
+  function settleInside(attempt: AttemptRow, status: 'completed' | 'failed' | 'cancelled', errorCode: string | null, cost: number, overspend: number): boolean {
     const at = now();
     const latency = Math.max(0, at.getTime() - ms(attempt.created_at));
     const changed = closeAttempt.run(status, errorCode, money(cost), money(overspend), latency, iso(at), attempt.id);
@@ -708,23 +732,58 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
     if (!isObject(raw)) return fail(400, 'invalid_request');
     const { lease_id: leaseId, report_seq: seq, state } = raw;
     if (typeof leaseId !== 'string' || !Number.isInteger(seq) || (seq as number) < 1) return fail(400, 'invalid_request');
+    const first = selectAttempt.get(attemptId) as AttemptRow | undefined;
+    if (!first) return fail(404, 'not_found');
+    // All async work happens before the transaction; the decision below re-reads the row and is synchronous.
+    const kind = (selectRequest.get(first.request_id) as unknown as RequestRow).kind;
+    const prefix = `${kind === 'image' ? 'images' : 'videos'}/${await subjectHash(subjectHashKey, first.subject_key)}/`;
     const at = now();
-    const attempt = selectAttempt.get(attemptId) as AttemptRow | undefined;
-    if (!attempt) return fail(404, 'not_found');
+
+    db.exec('BEGIN IMMEDIATE');
+    let result: MediaResult;
+    let refreshId: string | undefined;
+    try {
+      result = decideReport(attemptId, raw, leaseId, seq as number, state, prefix, at);
+      refreshId = first.request_id;
+      db.exec('COMMIT');
+    } catch (caught) {
+      db.exec('ROLLBACK');
+      throw caught;
+    }
+    if (refreshId) refreshRequest(refreshId);
+    return result;
+  }
+
+  function insertAssets(attempt: AttemptRow, assets: Array<Record<string, unknown>>, at: Date): void {
+    for (const asset of assets) {
+      insertAsset.run(randomId(), attempt.subject_key, attempt.id, asset.object_key as string, asset.media_type as string, asset.bytes as number,
+        Number.isInteger(asset.width) ? asset.width as number : null, Number.isInteger(asset.height) ? asset.height as number : null,
+        typeof asset.seconds === 'number' ? asset.seconds : null, asset.sha256 as string, iso(at));
+    }
+  }
+
+  function decideReport(attemptId: string, raw: Record<string, unknown>, leaseId: string, seq: number, state: unknown, prefix: string, at: Date): MediaResult {
+    const attempt = selectAttempt.get(attemptId) as unknown as AttemptRow;
+    const leaseMatches = attempt.lease_id !== null && constantTimeEqual(attempt.lease_id, leaseId);
     if (TERMINAL.has(attempt.status)) {
-      addFlag.run('late_report', attempt.id, 'late_report');
+      // Rule 3: absorbing. A completed output from the attempt's own lease, after it was closed
+      // timeout/submit_unknown, is kept and linked; cost is never settled again.
+      if (leaseMatches) {
+        addFlag.run('late_report', attempt.id, 'late_report');
+        if (state === 'completed' && attempt.status === 'failed' && (attempt.error_code === 'timeout' || attempt.error_code === 'submit_unknown')) {
+          const assets = validAssets(raw.assets, prefix);
+          const already = (db.prepare('SELECT COUNT(*) AS n FROM media_assets WHERE attempt_id = ?').get(attempt.id) as { n: number }).n;
+          if (typeof assets !== 'string' && already === 0) insertAssets(attempt, assets, at);
+        }
+      }
       return fail(409, 'terminal');
     }
-    if (!attempt.lease_id || !constantTimeEqual(attempt.lease_id, leaseId) || leaseExpired(attempt, at) || (seq as number) <= attempt.report_seq) {
-      return fail(409, 'stale_report');
-    }
-    const prefix = `${(selectRequest.get(attempt.request_id) as unknown as RequestRow).kind === 'image' ? 'images' : 'videos'}/${await subjectHash(subjectHashKey, attempt.subject_key)}/`;
+    if (!leaseMatches || leaseExpired(attempt, at) || seq <= attempt.report_seq) return fail(409, 'stale_report');
     switch (state) {
       case 'submit_started':
         if (attempt.status !== 'leased') return fail(409, 'wrong_state');
         if (attempt.cancel_requested_at) return fail(409, 'cancelled');
-        setSubmitStarted.run(iso(at), seq as number, iso(at), attempt.id);
-        refreshRequest(attempt.request_id);
+        setSubmitStarted.run(iso(at), seq, iso(at), attempt.id);
         return { status: 200, body: { ok: true } };
       case 'submitted': {
         if (attempt.status !== 'submit_started' && attempt.status !== 'submitted') return fail(409, 'wrong_state');
@@ -733,7 +792,6 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
         if (attempt.provider_job_ref && attempt.provider_job_ref !== ref) return fail(409, 'ref_mismatch');
         setSubmitted.run(ref, iso(at), attempt.id);
         deleteSlot.run(attempt.id);
-        refreshRequest(attempt.request_id);
         return { status: 200, body: { ok: true } };
       }
       case 'completed': {
@@ -747,34 +805,23 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
           cost = money(raw.provider_cost_usd);
           overspend = Math.max(0, money(cost - attempt.reserved_usd));
         }
-        db.exec('BEGIN IMMEDIATE');
-        try {
-          for (const asset of assets) {
-            insertAsset.run(randomId(), attempt.subject_key, attempt.id, asset.object_key as string, asset.media_type as string, asset.bytes as number,
-              Number.isInteger(asset.width) ? asset.width as number : null, Number.isInteger(asset.height) ? asset.height as number : null,
-              typeof asset.seconds === 'number' ? asset.seconds : null, asset.sha256 as string, iso(at));
-          }
-          setSeq.run(seq as number, iso(at), attempt.id);
-          settle(attempt, 'completed', null, cost, overspend);
-          if (overspend > 0) addFlag.run('overspend', attempt.id, 'overspend');
-          db.exec('COMMIT');
-        } catch (caught) {
-          db.exec('ROLLBACK');
-          throw caught;
-        }
+        insertAssets(attempt, assets, at);
+        setSeq.run(seq, iso(at), attempt.id);
+        settleInside(attempt, 'completed', null, cost, overspend);
+        if (overspend > 0) addFlag.run('overspend', attempt.id, 'overspend');
         return { status: 200, body: { ok: true } };
       }
       case 'failed': {
         const code = raw.error_code;
         if (typeof code !== 'string' || !ERROR_CODES.has(code)) return fail(400, 'invalid_request');
         if (code === 'submit_unknown') addFlag.run('submit_unknown', attempt.id, 'submit_unknown');
-        settle(attempt, 'failed', code, costIfClosedNow(attempt));
+        settleInside(attempt, 'failed', code, costIfClosedNow(attempt), 0);
         return { status: 200, body: { ok: true } };
       }
       case 'cancelled': {
         if (!attempt.cancel_requested_at) return fail(409, 'wrong_state');
         const model = registry.models[attempt.model_id];
-        settle(attempt, 'cancelled', 'cancelled', attempt.submit_started_at && model?.pricing.cancel_policy === 'charged' ? attempt.reserved_usd : 0);
+        settleInside(attempt, 'cancelled', 'cancelled', attempt.submit_started_at && model?.pricing.cancel_policy === 'charged' ? attempt.reserved_usd : 0, 0);
         return { status: 200, body: { ok: true } };
       }
       default:

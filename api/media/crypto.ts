@@ -37,7 +37,12 @@ const KEY_ID = /^[A-Za-z0-9_-]{1,32}$/;
 
 function fromBase64(value: string): Uint8Array<ArrayBuffer> {
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return new Uint8Array(0);
-  const binary = atob(value);
+  let binary: string;
+  try {
+    binary = atob(value);
+  } catch {
+    return new Uint8Array(0);
+  }
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
   return bytes;
