@@ -308,8 +308,9 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
   function paramsAllowed(modelId: string, params: Record<string, unknown>): string | null {
     const allowed = registry.models[modelId].extra_params;
     for (const [key, value] of Object.entries(params)) {
-      const spec = allowed[key];
-      if (!spec) return `params.${key} is not allowed for this model`;
+      // Own properties only: names like constructor or __proto__ must not match the prototype.
+      const spec = Object.hasOwn(allowed, key) ? allowed[key] : undefined;
+      if (!spec || !isObject(spec)) return `params.${key} is not allowed for this model`;
       if (spec.type === 'integer' && !Number.isInteger(value)) return `params.${key} must be an integer`;
       if (spec.type === 'number' && (typeof value !== 'number' || !Number.isFinite(value))) return `params.${key} must be a number`;
       if (spec.type === 'boolean' && typeof value !== 'boolean') return `params.${key} must be a boolean`;
@@ -801,14 +802,23 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
         const model = registry.models[attempt.model_id];
         let cost = money(attempt.unit_price_usd * attempt.units);
         let overspend = 0;
-        if (model?.pricing.cost_source === 'provider' && typeof raw.provider_cost_usd === 'number' && Number.isFinite(raw.provider_cost_usd) && raw.provider_cost_usd >= 0) {
-          cost = money(raw.provider_cost_usd);
-          overspend = Math.max(0, money(cost - attempt.reserved_usd));
+        let costMissing = false;
+        if (model?.pricing.cost_source === 'provider') {
+          const reported = raw.provider_cost_usd;
+          if (typeof reported === 'number' && Number.isFinite(reported) && reported >= 0) {
+            cost = money(reported);
+            overspend = Math.max(0, money(cost - attempt.reserved_usd));
+          } else {
+            // No usable provider cost: settle the whole (2x) reservation, never the lower registry price.
+            cost = attempt.reserved_usd;
+            costMissing = true;
+          }
         }
         insertAssets(attempt, assets, at);
         setSeq.run(seq, iso(at), attempt.id);
         settleInside(attempt, 'completed', null, cost, overspend);
         if (overspend > 0) addFlag.run('overspend', attempt.id, 'overspend');
+        if (costMissing) addFlag.run('provider_cost_missing', attempt.id, 'provider_cost_missing');
         return { status: 200, body: { ok: true } };
       }
       case 'failed': {
