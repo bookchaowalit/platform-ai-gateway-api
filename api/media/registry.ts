@@ -170,72 +170,166 @@ function isDate(value: unknown): value is string {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value));
 }
 
-/** AC-05: every problem names the entry, never a value. An empty list means the registry may be used. */
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function isNumberArray(value: unknown): value is number[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'number' && Number.isFinite(item));
+}
+
+const EXTRA_PARAM_TYPES = new Set(['integer', 'number', 'boolean', 'string']);
+const TEXT_RANKS = new Set(['good', 'fair', 'poor']);
+
+function checkProvider(id: string, provider: unknown, problems: string[]): void {
+  if (!isObject(provider)) {
+    problems.push(`provider ${id}: is not an object`);
+    return;
+  }
+  const adapter = typeof provider.adapter === 'string' ? KNOWN_MEDIA_ADAPTERS[provider.adapter] : undefined;
+  if (!adapter) problems.push(`provider ${id}: adapter is unknown`);
+  if (!isStringArray(provider.output_hosts)) problems.push(`provider ${id}: output_hosts is not a list of hosts`);
+  else if (adapter?.returns_urls && provider.output_hosts.length === 0) problems.push(`provider ${id}: output_hosts is empty for an adapter that returns URLs`);
+  if (typeof provider.credential_env !== 'string' || !/^[A-Z][A-Z0-9_]{1,63}$/.test(provider.credential_env)) problems.push(`provider ${id}: credential_env is not a variable name`);
+  for (const field of ['max_concurrent', 'max_in_flight', 'rpm'] as const) {
+    if (!Number.isInteger(provider[field]) || (provider[field] as number) < 1) problems.push(`provider ${id}: ${field} must be a positive integer`);
+  }
+  if (typeof provider.webhook !== 'boolean') problems.push(`provider ${id}: webhook must be a boolean`);
+  if (!isStringArray(provider.privacy_classes)) problems.push(`provider ${id}: privacy_classes is missing`);
+  if (!isDate(provider.terms_checked_at)) problems.push(`provider ${id}: terms_checked_at is missing`);
+}
+
+function checkModel(id: string, model: unknown, providers: Record<string, unknown>, problems: string[]): void {
+  if (!isObject(model)) {
+    problems.push(`model ${id}: is not an object`);
+    return;
+  }
+  if (typeof model.provider !== 'string' || !providers[model.provider]) problems.push(`model ${id}: provider is unknown`);
+  if (typeof model.provider_model !== 'string' || model.provider_model === '') problems.push(`model ${id}: provider_model is missing`);
+  if (model.kind !== 'image' && model.kind !== 'video') problems.push(`model ${id}: kind is invalid`);
+  if (typeof model.enabled !== 'boolean') problems.push(`model ${id}: enabled must be a boolean`);
+
+  const caps = model.capabilities;
+  if (!isObject(caps) || !isStringArray(caps.aspects) || !isStringArray(caps.resolutions)
+    || (caps.seconds !== undefined && !isNumberArray(caps.seconds)) || typeof caps.references !== 'number'
+    || (caps.max_n !== undefined && !Number.isInteger(caps.max_n))
+    || (caps.audio !== undefined && typeof caps.audio !== 'boolean')
+    || (caps.text_in_image !== undefined && !TEXT_RANKS.has(caps.text_in_image as string))) {
+    problems.push(`model ${id}: capabilities is malformed`);
+    return;
+  }
+  if (model.kind === 'video' && (!isNumberArray(caps.seconds) || caps.seconds.length === 0)) problems.push(`model ${id}: capabilities.seconds is missing for video`);
+
+  const map = model.param_map;
+  if (!isObject(map) || !isObject(map.aspect) || !isObject(map.resolution)) {
+    problems.push(`model ${id}: param_map is malformed`);
+  } else {
+    for (const [group, keys] of [['aspect', caps.aspects], ['resolution', caps.resolutions]] as const) {
+      const table = map[group] as Record<string, unknown>;
+      for (const key of keys) {
+        if (!(key in table)) problems.push(`model ${id}: param_map.${group} is missing ${key}`);
+        else if (!isObject(table[key])) problems.push(`model ${id}: param_map.${group} entry ${key} is not an object`);
+      }
+    }
+  }
+
+  if (!isObject(model.extra_params)) {
+    problems.push(`model ${id}: extra_params is not an object`);
+  } else {
+    for (const [name, spec] of Object.entries(model.extra_params)) {
+      if (!isObject(spec) || !EXTRA_PARAM_TYPES.has(spec.type as string)
+        || (spec.min !== undefined && typeof spec.min !== 'number') || (spec.max !== undefined && typeof spec.max !== 'number')
+        || (spec.values !== undefined && !isStringArray(spec.values))) {
+        problems.push(`model ${id}: extra_params ${name} is malformed`);
+      }
+    }
+  }
+
+  if (model.own_eval !== null) {
+    const evals = model.own_eval;
+    const ok = isObject(evals) && Object.values(evals).every((entry) => isObject(entry) && isDate(entry.evaluated_at)
+      && typeof entry.votes === 'number' && typeof entry.win_rate === 'number' && typeof entry.mean_score === 'number');
+    if (!ok) problems.push(`model ${id}: own_eval is malformed`);
+  }
+
+  const pricing = model.pricing;
+  if (!isObject(pricing) || (pricing.unit !== 'image' && pricing.unit !== 'second')) {
+    problems.push(`model ${id}: pricing.unit is invalid`);
+    return;
+  }
+  if (pricing.unit !== (model.kind === 'image' ? 'image' : 'second')) problems.push(`model ${id}: pricing.unit does not match kind`);
+  if (pricing.cost_source !== 'registry' && pricing.cost_source !== 'provider') problems.push(`model ${id}: pricing.cost_source is invalid`);
+  if (pricing.cancel_policy !== 'free' && pricing.cancel_policy !== 'charged') problems.push(`model ${id}: pricing.cancel_policy is invalid`);
+  if (!isObject(pricing.usd)) {
+    problems.push(`model ${id}: pricing.usd is not an object`);
+    return;
+  }
+  const prices = Object.entries(pricing.usd);
+  for (const [key, usd] of prices) {
+    if (typeof usd !== 'number' || !Number.isFinite(usd) || usd < 0) problems.push(`model ${id}: price ${key} is negative or not a number`);
+  }
+  if (prices.length > 0) {
+    if (typeof pricing.source !== 'string' || !/^https:\/\//.test(pricing.source)) problems.push(`model ${id}: pricing.source is missing`);
+    if (!isDate(pricing.checked_at)) problems.push(`model ${id}: pricing.checked_at is missing`);
+  }
+}
+
+function checkProfile(id: string, profile: unknown, models: Record<string, unknown>, problems: string[]): void {
+  if (!isObject(profile)) {
+    problems.push(`profile ${id}: is not an object`);
+    return;
+  }
+  if (profile.kind !== 'image' && profile.kind !== 'video') problems.push(`profile ${id}: kind is invalid`);
+  const defaults = profile.defaults;
+  if (!isObject(defaults)
+    || (defaults.aspect !== undefined && typeof defaults.aspect !== 'string')
+    || (defaults.resolution !== undefined && typeof defaults.resolution !== 'string')
+    || (defaults.seconds !== undefined && (typeof defaults.seconds !== 'number' || !Number.isFinite(defaults.seconds)))) {
+    problems.push(`profile ${id}: defaults is malformed`);
+  }
+  if (profile.requires !== undefined && (!isObject(profile.requires)
+    || (profile.requires.text_in_image !== undefined && !TEXT_RANKS.has(profile.requires.text_in_image as string)))) {
+    problems.push(`profile ${id}: requires is malformed`);
+  }
+  if (!isStringArray(profile.models)) {
+    problems.push(`profile ${id}: models is not a list of model ids`);
+    return;
+  }
+  for (const modelId of profile.models) {
+    const model = models[modelId];
+    if (!isObject(model)) problems.push(`profile ${id}: model ${modelId} is unknown`);
+    else if (model.kind !== profile.kind) problems.push(`profile ${id}: kind does not match model ${modelId}`);
+  }
+}
+
+/**
+ * AC-05: full shape check of untrusted registry JSON. Every problem names the entry, never a
+ * value. An empty list means the registry may be used; the router assumes a registry that passed.
+ */
 export function validateMediaGenerationRegistry(registry: MediaGenerationRegistry): { problems: string[] } {
   const problems: string[] = [];
-  if (!registry || typeof registry !== 'object') return { problems: ['registry is not an object'] };
-  if (registry.schema_version !== MEDIA_GENERATION_REGISTRY_SCHEMA) problems.push('schema_version is not supported');
-  const policy = registry.policy;
-  if (!policy || !(policy.max_evaluation_age_days > 0) || !(policy.fallback_depth >= 0)
-    || !(policy.lease_wait_max_ms > 0) || !(policy.job_timeout_ms > 0) || !Array.isArray(policy.external_privacy_classes)) {
+  const root = registry as unknown;
+  if (!isObject(root)) return { problems: ['registry is not an object'] };
+  if (root.schema_version !== MEDIA_GENERATION_REGISTRY_SCHEMA) problems.push('schema_version is not supported');
+  const policy = root.policy;
+  if (!isObject(policy) || !((policy.max_evaluation_age_days as number) > 0) || !Number.isInteger(policy.fallback_depth)
+    || (policy.fallback_depth as number) < 0 || !((policy.lease_wait_max_ms as number) > 0) || !((policy.job_timeout_ms as number) > 0)
+    || !isStringArray(policy.external_privacy_classes)) {
     problems.push('policy is incomplete');
   }
-  const providers = registry.providers ?? {};
-  for (const [id, provider] of Object.entries(providers)) {
-    const adapter = KNOWN_MEDIA_ADAPTERS[provider.adapter];
-    if (!adapter) {
-      problems.push(`provider ${id}: adapter is unknown`);
-    } else if (adapter.returns_urls && (!Array.isArray(provider.output_hosts) || provider.output_hosts.length === 0)) {
-      problems.push(`provider ${id}: output_hosts is empty for an adapter that returns URLs`);
-    }
-    if (!/^[A-Z][A-Z0-9_]{1,63}$/.test(provider.credential_env ?? '')) problems.push(`provider ${id}: credential_env is not a variable name`);
-    if (!(provider.max_concurrent >= 1) || !(provider.max_in_flight >= 1) || !(provider.rpm >= 1)) problems.push(`provider ${id}: limits must be positive`);
-    if (!Array.isArray(provider.privacy_classes)) problems.push(`provider ${id}: privacy_classes is missing`);
+  for (const section of ['providers', 'models', 'profiles'] as const) {
+    if (!isObject(root[section])) problems.push(`${section} is not an object`);
   }
-  const models = registry.models ?? {};
-  for (const [id, model] of Object.entries(models)) {
-    if (!providers[model.provider]) problems.push(`model ${id}: provider is unknown`);
-    if (model.kind !== 'image' && model.kind !== 'video') problems.push(`model ${id}: kind is invalid`);
-    const caps = model.capabilities;
-    if (!caps || typeof caps !== 'object' || !Array.isArray(caps.aspects) || !Array.isArray(caps.resolutions)
-      || (caps.seconds !== undefined && !Array.isArray(caps.seconds)) || typeof caps.references !== 'number') {
-      problems.push(`model ${id}: capabilities is malformed`);
-      continue;
-    }
-    if (model.kind === 'video' && (!Array.isArray(caps.seconds) || caps.seconds.length === 0)) problems.push(`model ${id}: capabilities.seconds is missing for video`);
-    const map = model.param_map;
-    if (!map || typeof map !== 'object' || !map.aspect || typeof map.aspect !== 'object' || !map.resolution || typeof map.resolution !== 'object') {
-      problems.push(`model ${id}: param_map is malformed`);
-      continue;
-    }
-    for (const aspect of model.capabilities?.aspects ?? []) {
-      if (!model.param_map?.aspect?.[aspect]) problems.push(`model ${id}: param_map.aspect is missing ${aspect}`);
-    }
-    for (const resolution of model.capabilities?.resolutions ?? []) {
-      if (!model.param_map?.resolution?.[resolution]) problems.push(`model ${id}: param_map.resolution is missing ${resolution}`);
-    }
-    const pricing = model.pricing;
-    if (!pricing || (pricing.unit !== 'image' && pricing.unit !== 'second')) {
-      problems.push(`model ${id}: pricing.unit is invalid`);
-      continue;
-    }
-    if (pricing.unit !== (model.kind === 'image' ? 'image' : 'second')) problems.push(`model ${id}: pricing.unit does not match kind`);
-    const prices = Object.entries(pricing.usd ?? {});
-    for (const [key, usd] of prices) {
-      if (typeof usd !== 'number' || !Number.isFinite(usd) || usd < 0) problems.push(`model ${id}: price ${key} is negative or not a number`);
-    }
-    if (prices.length > 0) {
-      if (typeof pricing.source !== 'string' || !/^https:\/\//.test(pricing.source)) problems.push(`model ${id}: pricing.source is missing`);
-      if (!isDate(pricing.checked_at)) problems.push(`model ${id}: pricing.checked_at is missing`);
-    }
-  }
-  for (const [id, profile] of Object.entries(registry.profiles ?? {})) {
-    for (const modelId of profile.models ?? []) {
-      const model = models[modelId];
-      if (!model) problems.push(`profile ${id}: model ${modelId} is unknown`);
-      else if (model.kind !== profile.kind) problems.push(`profile ${id}: kind does not match model ${modelId}`);
-    }
-  }
+  const providers = isObject(root.providers) ? root.providers : {};
+  const models = isObject(root.models) ? root.models : {};
+  const profiles = isObject(root.profiles) ? root.profiles : {};
+  for (const [id, provider] of Object.entries(providers)) checkProvider(id, provider, problems);
+  for (const [id, model] of Object.entries(models)) checkModel(id, model, providers, problems);
+  for (const [id, profile] of Object.entries(profiles)) checkProfile(id, profile, models, problems);
   return { problems };
 }
 
