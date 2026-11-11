@@ -8,7 +8,7 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "build": "esbuild main.ts --bundle --platform=node --format=esm --target=node22 --external:node:sqlite --outfile=dist/server.mjs --legal-comments=none && node -e \"require('fs').mkdirSync('dist/migrations',{recursive:true});require('fs').copyFileSync('../../database/migrations/025_ai_run_telemetry.sql','dist/migrations/025_ai_run_telemetry.sql')\"",
+    "build": "esbuild main.ts --bundle --platform=node --format=esm --target=node22 --external:node:sqlite --outfile=dist/server.mjs --legal-comments=none && node -e \"require('fs').mkdirSync('dist/migrations',{recursive:true});require('fs').cpSync('../../database/migrations','dist/migrations',{recursive:true})\"",
     "start": "node --disable-warning=ExperimentalWarning dist/server.mjs"
   },
   "devDependencies": {

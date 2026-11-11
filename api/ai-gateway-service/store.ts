@@ -15,6 +15,8 @@ import { DatabaseSync } from 'node:sqlite';
 import type { AiTelemetryEvent } from '../ai_gateway.js';
 
 export const TELEMETRY_MIGRATION_FILE = '025_ai_run_telemetry.sql';
+/** Run in this order on every start; each file is idempotent (CREATE ... IF NOT EXISTS, no ALTER). SPEC-003 §4.4. */
+export const MIGRATION_FILES = [TELEMETRY_MIGRATION_FILE, '026_media_generation.sql'] as const;
 
 const REQUIRED_COLUMNS = [
   'run_id', 'route', 'prompt_version', 'provider', 'model', 'input_tokens', 'output_tokens',
@@ -53,21 +55,25 @@ export interface TelemetryStore {
 }
 
 /**
- * Locate the shared migration. Source layout: infra/api/ai-gateway-service →
- * infra/database/migrations. Bundled layout: dist/migrations next to the
- * server bundle. AI_GATEWAY_MIGRATION_PATH overrides both.
+ * Load every migration in MIGRATION_FILES, in order, as one SQL script. Source layout:
+ * api/ai-gateway-service → database/migrations. Bundled layout: dist/migrations next to the
+ * server bundle. AI_GATEWAY_MIGRATION_PATH (path of the 025 file) overrides both: the other
+ * files are read from the same directory.
  */
 export function loadTelemetryMigration(env: NodeJS.ProcessEnv = process.env, moduleUrl = import.meta.url): string {
   const here = dirname(fileURLToPath(moduleUrl));
-  const candidates = [
-    env.AI_GATEWAY_MIGRATION_PATH?.trim(),
-    `${here}/migrations/${TELEMETRY_MIGRATION_FILE}`,
-    `${here}/../../database/migrations/${TELEMETRY_MIGRATION_FILE}`,
+  const override = env.AI_GATEWAY_MIGRATION_PATH?.trim();
+  const directories = [
+    override ? dirname(override) : undefined,
+    `${here}/migrations`,
+    `${here}/../../database/migrations`,
   ].filter((candidate): candidate is string => Boolean(candidate));
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return readFileSync(candidate, 'utf8');
+  for (const directory of directories) {
+    if (MIGRATION_FILES.every((file) => existsSync(`${directory}/${file}`))) {
+      return MIGRATION_FILES.map((file) => readFileSync(`${directory}/${file}`, 'utf8')).join('\n');
+    }
   }
-  throw new Error(`telemetry migration ${TELEMETRY_MIGRATION_FILE} was not found`);
+  throw new Error(`migrations ${MIGRATION_FILES.join(', ')} were not found`);
 }
 
 export function openTelemetryStore(path: string, migrationSql: string): TelemetryStore {
@@ -78,6 +84,8 @@ export function openTelemetryStore(path: string, migrationSql: string): Telemetr
     if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL');
     // Spend rows gate the monthly budget, so favor durability over latency.
     db.exec('PRAGMA synchronous = FULL');
+    // SPEC-003 §4.7 rule 9: deleted payload ciphertext is overwritten (a connection setting).
+    db.exec('PRAGMA secure_delete = ON');
     db.exec(migrationSql);
     const columns = new Set(
       (db.prepare('PRAGMA table_info(ai_run_telemetry)').all() as Array<{ name: string }>).map((row) => row.name),
