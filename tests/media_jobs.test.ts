@@ -534,3 +534,26 @@ test('Codex: a malformed registry keeps media off without throwing', async () =>
   assert.ok(jobs.problems().some((p) => p.startsWith('registry:')));
   assert.equal((await jobs.create(caller, body(), {})).status, 503);
 });
+
+test('Codex: params allow-list ignores inherited names like constructor and __proto__', async () => {
+  const h = harness();
+  for (const params of [{ constructor: 1 }, JSON.parse('{"__proto__": {"x": 1}}'), { toString: 'x' }, { hasOwnProperty: 1 }]) {
+    assert.equal((await h.jobs.create(caller, body({ params }), {})).status, 400, JSON.stringify(params));
+  }
+  assert.equal((h.store.db.prepare('SELECT COUNT(*) AS n FROM media_requests').get() as { n: number }).n, 0);
+});
+
+test('Codex: a provider-priced completion without a provider cost settles the full reservation and is flagged', async () => {
+  const providerPriced = registry();
+  providerPriced.models['a-photo'].pricing.cost_source = 'provider';
+  const h = harness({}, { registry: providerPriced });
+  await h.jobs.create(caller, body(), {});
+  const id = h.sent[0].attempt_id;
+  const lease = (await startLease(h)).body as { lease_id: string; attempt: { object_key_prefix: string } };
+  assert.equal(attemptRow(h, id).reserved_usd, 0.08);
+  await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 1, state: 'submit_started' });
+  const done = await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 2, state: 'completed', assets: [asset(lease.attempt.object_key_prefix)] });
+  assert.equal(done.status, 200);
+  assert.equal(attemptRow(h, id).cost_usd, 0.08);
+  assert.match(String(attemptRow(h, id).flags), /provider_cost_missing/);
+});
