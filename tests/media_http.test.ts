@@ -310,3 +310,19 @@ test('Codex: reads need the scope of the request kind (ai:video cannot read an i
     await close(worker.server);
   }
 });
+
+test('Codex: dry_run uses the read bucket, and the catalog availability follows the subject model allow-list', async () => {
+  const worker = await fakeWorker();
+  const gateway = await startWith(mediaEnv(worker.url, { AI_GATEWAY_MEDIA_IMAGE_RPM: '1', AI_GATEWAY_MEDIA_SUBJECT_MODELS_JSON: JSON.stringify({ 'ops-reader': [] }) }));
+  try {
+    for (let i = 0; i < 3; i += 1) assert.equal((await call(gateway.url, '/api/ai/media/requests', IMAGE_TOKEN, { body: createBody({ dry_run: true }) })).status, 200);
+    assert.equal((await call(gateway.url, '/api/ai/media/requests', IMAGE_TOKEN, { body: createBody() })).status, 202, 'dry runs did not use the create quota');
+    const forReader = await (await call(gateway.url, '/api/ai/media/models', READER_TOKEN)).json() as { models: Array<{ available: boolean }> };
+    assert.equal(forReader.models[0].available, false);
+    const forPortfolio = await (await call(gateway.url, '/api/ai/media/models', IMAGE_TOKEN)).json() as { models: Array<{ available: boolean }> };
+    assert.equal(forPortfolio.models[0].available, true);
+  } finally {
+    await gateway.stop();
+    await close(worker.server);
+  }
+});

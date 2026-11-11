@@ -656,3 +656,50 @@ test('Codex: a late completed report from a lease that was recovered is still li
   assert.equal((h.store.db.prepare('SELECT COUNT(*) AS n FROM media_assets WHERE attempt_id = ?').get(id) as { n: number }).n, 1);
   assert.equal((h.store.db.prepare("SELECT COUNT(*) AS n FROM ai_run_telemetry WHERE route LIKE 'media.%'").get() as { n: number }).n, 1);
 });
+
+test('Security: switching media off stops new provider calls (no dispatch, no start lease) but cleanup continues', async () => {
+  const h = harness();
+  h.failEnqueue.value = true;
+  await h.jobs.create(caller, body(), {});
+  await h.jobs.create({ subject: 'client-b' }, body(), {});
+  h.failEnqueue.value = false;
+  const off = createMediaJobs({
+    db: h.store.db, record: (e) => h.store.record(e), registry: registry(), env: { ...h.env, AI_GATEWAY_MEDIA_ENABLED: '' },
+    payloadKeys: PAYLOAD_KEYS.ok ? PAYLOAD_KEYS.keys : undefined, queueKey: QUEUE_KEY, now: () => new Date(h.clock.now),
+    enqueue: async (m) => { h.sent.push(m); },
+  });
+  h.clock.now += 60_000;
+  await off.housekeeping();
+  assert.equal(h.sent.length, 0, 'no dispatch while off');
+  const id = (h.store.db.prepare('SELECT id, dispatch_no FROM media_attempts LIMIT 1').get() as { id: string; dispatch_no: string });
+  const message = { v: 1 as const, attempt_id: id.id, dispatch_no: id.dispatch_no, reason: 'start' as const };
+  const leased = await off.lease(id.id, { ...message, sig: await queueMessageSignature(QUEUE_KEY, message) });
+  assert.equal(leased.status, 503);
+  assert.equal(attemptRow(h, id.id).status, 'queued');
+});
+
+test('Codex: provider model and adapter are frozen on the attempt at admission', async () => {
+  const h = harness();
+  await h.jobs.create(caller, body(), {});
+  const later = registry();
+  later.models['a-photo'].provider_model = 'photo-9-expensive';
+  const redeployed = createMediaJobs({
+    db: h.store.db, record: (e) => h.store.record(e), registry: later, env: h.env, payloadKeys: PAYLOAD_KEYS.ok ? PAYLOAD_KEYS.keys : undefined,
+    queueKey: QUEUE_KEY, now: () => new Date(h.clock.now), enqueue: async () => undefined,
+  });
+  const message = h.sent[0];
+  const lease = await redeployed.lease(message.attempt_id, { reason: 'start', dispatch_no: message.dispatch_no, sig: message.sig });
+  assert.equal((lease.body as { attempt: { provider_model: string; adapter: string } }).attempt.provider_model, 'photo-1');
+  assert.equal((lease.body as { attempt: { adapter: string } }).attempt.adapter, 'fake-sync');
+});
+
+test('Codex: a provider rejection the worker knows was not charged settles 0 even after submit_started', async () => {
+  const h = harness();
+  const { id, lease } = await submitStarted(h);
+  await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 2, state: 'failed', error_code: 'provider_error', provider_charged: false });
+  assert.equal(attemptRow(h, id).cost_usd, 0);
+  const h2 = harness();
+  const second = await submitStarted(h2);
+  await h2.jobs.report(second.id, { lease_id: second.lease.lease_id, report_seq: 2, state: 'failed', error_code: 'provider_error' });
+  assert.equal(attemptRow(h2, second.id).cost_usd, 0.04, 'unknown outcome still settles the reservation');
+});

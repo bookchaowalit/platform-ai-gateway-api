@@ -299,3 +299,46 @@ test('SPEC-003 a completed report survives a short gateway blip (same report_seq
   assert.deepEqual(seqs, [1, 2, 2]);
   assert.deepEqual(b.acked, [0]);
 });
+
+test('Codex: a gateway outage during the final report sends a delayed replacement instead of burning a retry', async () => {
+  const { env: e, sent } = env();
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    if (path.endsWith('/lease')) return new Response(JSON.stringify(leaseBody()), { status: 200 });
+    const body = JSON.parse(String(init?.body));
+    if (path.endsWith('/report') && body.state === 'completed') return new Response('{}', { status: 503 });
+    return new Response('{"ok":true}', { status: 200 });
+  }) as typeof fetch;
+  const b = batch([await signedMessage()]);
+  await handleQueue(b.value, e, { fetch: fetchImpl, adapters: { fake: fakeAdapter(async () => [PNG]) } });
+  assert.deepEqual(b.retried, []);
+  assert.deepEqual(b.acked, [0]);
+  assert.equal(sent.length, 1);
+});
+
+test('Codex: provider rejections are reported as not charged; unknown outcomes are not', async () => {
+  for (const [error, charged] of [[new AdapterError('content_policy', false), false], [new AdapterError('provider_error', false), false], [new AdapterError('provider_error'), undefined], [new Error('x'), undefined]] as const) {
+    const { env: e } = env();
+    const gw = gateway((path) => path.endsWith('/lease') ? { status: 200, body: leaseBody() } : { status: 200, body: { ok: true } });
+    const b = batch([await signedMessage()]);
+    await handleQueue(b.value, e, { fetch: gw.fetchImpl, adapters: { fake: fakeAdapter(async () => { throw error; }) } });
+    const failed = gw.calls.filter((c) => c.path.endsWith('/report')).map((c) => c.body).find((r) => r.state === 'failed');
+    assert.equal(failed.provider_charged, charged === false ? false : undefined, String(error));
+  }
+});
+
+test('Codex: /healthz fails closed when the DLQ backlog cannot be read', async () => {
+  const noMetrics = env({ MEDIA_DLQ: { send: async () => undefined } }).env;
+  assert.equal((await handleFetch(new Request('https://w/healthz'), noMetrics)).status, 503);
+  const noDlq = env({ MEDIA_DLQ: undefined }).env;
+  assert.equal((await handleFetch(new Request('https://w/healthz'), noDlq)).status, 503);
+});
+
+test('Codex: the OpenAI adapter marks HTTP rejections as not charged and network failures as unknown', async () => {
+  const rejected = createOpenAiImagesAdapter({ apiKey: 'k', fetchImpl: (async () => new Response('{"error":{"code":"rate_limit"}}', { status: 429 })) as typeof fetch });
+  await assert.rejects(rejected.submit({ provider_model: 'm', mapped_params: {}, kind: 'image', units: 1, payload: { prompt: 'p', format: 'png', n: 1, params: {} }, idempotency_key: 'a' }),
+    (error: unknown) => error instanceof AdapterError && error.charged === false);
+  const network = createOpenAiImagesAdapter({ apiKey: 'k', fetchImpl: (async () => { throw new TypeError('fetch failed'); }) as typeof fetch });
+  await assert.rejects(network.submit({ provider_model: 'm', mapped_params: {}, kind: 'image', units: 1, payload: { prompt: 'p', format: 'png', n: 1, params: {} }, idempotency_key: 'a' }),
+    (error: unknown) => error instanceof AdapterError && error.charged === undefined);
+});
