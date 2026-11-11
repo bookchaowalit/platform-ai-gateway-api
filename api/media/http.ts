@@ -19,7 +19,7 @@ import type { WorkspaceAuthResult } from '../workspace_auth.js';
 import type { AiTelemetryEvent } from '../ai_gateway.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { parsePayloadKeys, type SignedQueueMessage } from './crypto.js';
-import { createMediaJobs, type MediaCaller, type MediaJobs, type MediaResult } from './jobs.js';
+import { createMediaJobs, effectiveMaxPromptChars, type MediaCaller, type MediaJobs, type MediaResult } from './jobs.js';
 import { r2SignerFromEnv } from './r2.js';
 import { validateMediaGenerationRegistry, type MediaGenerationRegistry } from './registry.js';
 import defaultRegistryJson from '../../platform/media-generation-routing.json' with { type: 'json' };
@@ -298,7 +298,7 @@ export function createMediaHttp(deps: MediaHttpDeps): MediaHttp {
       },
       problems: list,
       limits: {
-        max_prompt_chars: Number(env.AI_GATEWAY_MEDIA_MAX_PROMPT_CHARS) || 4_000,
+        max_prompt_chars: effectiveMaxPromptChars(registry, env),
         url_ttl_s: signer.ok ? signer.ttlSeconds : null,
         max_active_per_subject: Number(env.AI_GATEWAY_MEDIA_MAX_ACTIVE_PER_SUBJECT) || 4,
       },

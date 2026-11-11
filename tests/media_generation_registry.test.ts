@@ -265,3 +265,14 @@ test('DoD N7 an enabled model needs a real provider_model and at least one price
   disabled.models['a-photo'].provider_model = 'set-on-setup-day';
   assert.deepEqual(validateMediaGenerationRegistry(disabled).problems, [], 'disabled placeholders are fine');
 });
+
+test('policy.max_prompt_chars, when present, must be a positive integer', () => {
+  for (const bad of [0, -1, 1.5, '1000']) {
+    const r = fixture();
+    (r.policy as Record<string, unknown>).max_prompt_chars = bad;
+    assert.ok(validateMediaGenerationRegistry(r).problems.some((p) => /max_prompt_chars/.test(p)), String(bad));
+  }
+  const ok = fixture();
+  ok.policy.max_prompt_chars = 1000;
+  assert.deepEqual(validateMediaGenerationRegistry(ok).problems.filter((p) => /max_prompt_chars/.test(p)), []);
+});

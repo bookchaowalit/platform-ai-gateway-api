@@ -109,6 +109,8 @@ export interface MediaGenerationRegistry {
     fallback_depth: number;
     lease_wait_max_ms: number;
     job_timeout_ms: number;
+    /** Optional hard prompt cap. Prices that include a prompt-token allowance rely on it; the env cap can only lower it. */
+    max_prompt_chars?: number;
   };
   providers: Record<string, MediaProviderEntry>;
   models: Record<string, MediaModelEntry>;
@@ -325,6 +327,10 @@ export function validateMediaGenerationRegistry(registry: MediaGenerationRegistr
     || (policy.fallback_depth as number) < 0 || !((policy.lease_wait_max_ms as number) > 0) || !((policy.job_timeout_ms as number) > 0)
     || !isStringArray(policy.external_privacy_classes)) {
     problems.push('policy is incomplete');
+  }
+  if (isObject(policy) && policy.max_prompt_chars !== undefined
+    && !(Number.isInteger(policy.max_prompt_chars) && (policy.max_prompt_chars as number) > 0)) {
+    problems.push('policy.max_prompt_chars must be a positive integer');
   }
   for (const section of ['providers', 'models', 'profiles'] as const) {
     if (!isObject(root[section])) problems.push(`${section} is not an object`);

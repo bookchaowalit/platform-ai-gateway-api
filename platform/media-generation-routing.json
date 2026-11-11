@@ -1,13 +1,14 @@
 {
   "schema_version": "solo-empire.media-generation-routing.v1",
   "updated_at": "2026-11-11",
-  "description": "SPEC-003 media generation registry. Rankings, prices and enabled flags change here, never in code. Every model ships disabled with no prices: the owner sets provider_model, prices (from the provider's pricing page, with source and checked_at) and enabled on setup day (SPEC-003 Q1, Q4). openai-image (gpt-image-1.5): each price = the per-image output price from the model page + 0.01 USD prompt allowance (text input 5 USD / 1M tokens x 2,000 tokens), which covers AI_GATEWAY_MEDIA_MAX_PROMPT_CHARS=1000 at up to 2 tokens per character; raise the allowance before raising that cap.",
+  "description": "SPEC-003 media generation registry. Rankings, prices and enabled flags change here, never in code. Every model ships disabled with no prices: the owner sets provider_model, prices (from the provider's pricing page, with source and checked_at) and enabled on setup day (SPEC-003 Q1, Q4). openai-image (gpt-image-1.5): each price = the per-image output price from the model page + 0.01 USD prompt allowance (text input 5 USD / 1M tokens x 2,000 tokens), which covers policy.max_prompt_chars=1000 at up to 2 tokens per character (the env cap can only lower it); raise the allowance before raising that cap.",
   "policy": {
     "max_evaluation_age_days": 60,
     "external_privacy_classes": ["public", "internal"],
     "fallback_depth": 0,
     "lease_wait_max_ms": 1800000,
-    "job_timeout_ms": 1800000
+    "job_timeout_ms": 1800000,
+    "max_prompt_chars": 1000
   },
   "providers": {
     "openai": {

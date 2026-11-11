@@ -831,3 +831,15 @@ test('Codex: housekeeping still closes jobs when a later registry has a broken p
   await later.housekeeping();
   assert.equal(attemptRow(h, h.sent[0].attempt_id).status, 'failed');
 });
+
+test('registry policy.max_prompt_chars caps the prompt even when the env cap is unset or higher', async () => {
+  const capped = registry();
+  capped.policy.max_prompt_chars = 50;
+  const h = harness({}, { registry: capped });
+  assert.equal((await h.jobs.create(caller, body({ prompt: 'x'.repeat(51) }), {})).status, 400);
+  assert.equal((await h.jobs.create(caller, body({ prompt: 'x'.repeat(50) }), {})).status, 202);
+  const higherEnv = harness({ AI_GATEWAY_MEDIA_MAX_PROMPT_CHARS: '4000' }, { registry: capped });
+  assert.equal((await higherEnv.jobs.create(caller, body({ prompt: 'x'.repeat(51) }), {})).status, 400);
+  const lowerEnv = harness({ AI_GATEWAY_MEDIA_MAX_PROMPT_CHARS: '20' }, { registry: capped });
+  assert.equal((await lowerEnv.jobs.create(caller, body({ prompt: 'x'.repeat(21) }), {})).status, 400);
+});

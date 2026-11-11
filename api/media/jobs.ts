@@ -209,11 +209,18 @@ interface ValidRequest extends MediaRouteRequest {
   expected_reserved_usd?: number;
 }
 
+/** The env cap (default 4,000) never exceeds the registry's policy.max_prompt_chars, which prompt allowances in prices rely on. */
+export function effectiveMaxPromptChars(registry: MediaGenerationRegistry, env: NodeJS.ProcessEnv): number {
+  const fromEnv = intEnv(env.AI_GATEWAY_MEDIA_MAX_PROMPT_CHARS, 4_000, 1, 32_000);
+  const fromRegistry = registry?.policy?.max_prompt_chars;
+  return typeof fromRegistry === 'number' && fromRegistry > 0 ? Math.min(fromEnv, fromRegistry) : fromEnv;
+}
+
 export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
   const { db, registry, env } = deps;
   const registryProblems = validateMediaGenerationRegistry(registry).problems;
   const providersAvailable = new Set((env.AI_GATEWAY_MEDIA_PROVIDERS || '').split(',').map((p) => p.trim()).filter(Boolean));
-  const maxPrompt = intEnv(env.AI_GATEWAY_MEDIA_MAX_PROMPT_CHARS, 4_000, 1, 32_000);
+  const maxPrompt = effectiveMaxPromptChars(registry, env);
   const maxActive = intEnv(env.AI_GATEWAY_MEDIA_MAX_ACTIVE_PER_SUBJECT, 4, 1, 1_000);
   // Never longer than the bucket's 30-day lifecycle rule, or reads would sign URLs for deleted objects.
   const retentionDays = Math.min(intEnv(env.AI_GATEWAY_MEDIA_RETENTION_DAYS, 30, 1, 3_650), 30);
