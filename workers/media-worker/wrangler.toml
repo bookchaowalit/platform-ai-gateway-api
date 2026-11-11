@@ -1,0 +1,42 @@
+# SPEC-003 media-worker (option A). Deployed separately from the gateway (Railway).
+name = "solo-ai-media-worker"
+main = "src/worker.ts"
+compatibility_date = "2026-11-01"
+workers_dev = true
+
+# The account comes from CLOUDFLARE_ACCOUNT_ID (Infisical /cloudflare).
+
+# ADR-0008 queue plane. Created once with:
+#   wrangler queues create ai-media && wrangler queues create ai-media-dlq
+[[queues.producers]]
+binding = "MEDIA_QUEUE"
+queue = "ai-media"
+
+# Bound only to read the DLQ backlog for /healthz.
+[[queues.producers]]
+binding = "MEDIA_DLQ"
+queue = "ai-media-dlq"
+
+[[queues.consumers]]
+queue = "ai-media"
+max_batch_size = 4
+max_batch_timeout = 5
+max_retries = 8
+max_concurrency = 4
+dead_letter_queue = "ai-media-dlq"
+
+# Private bucket with a 30-day lifecycle rule (SPEC-003 §4.5). Created once with:
+#   wrangler r2 bucket create ai-media
+#   wrangler r2 bucket lifecycle add ai-media expire-30d --expire-days 30
+[[r2_buckets]]
+binding = "MEDIA_BUCKET"
+bucket_name = "ai-media"
+
+[vars]
+GATEWAY_URL = "https://api.bookchaowalit.com"
+
+# Secrets are never stored in this file; set them with `wrangler secret put` (values from Infisical):
+#   MEDIA_ENQUEUE_TOKEN          bearer the gateway uses for POST /enqueue (= gateway AI_GATEWAY_MEDIA_WORKER_ENQUEUE_TOKEN)
+#   MEDIA_QUEUE_KEY              HMAC key for queue messages (= gateway AI_GATEWAY_MEDIA_QUEUE_KEY)
+#   MEDIA_WORKER_GATEWAY_TOKEN   scoped gateway token with exactly ai:media-worker
+#   OPENAI_API_KEY               provider key (Infisical /openai), only for the openai-images adapter

@@ -13,6 +13,6 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["api/**/*.ts", "mcp/**/*.ts", "tests/**/*.ts"],
+  "include": ["api/**/*.ts", "mcp/**/*.ts", "tests/**/*.ts", "workers/**/*.ts"],
   "exclude": ["**/node_modules", "**/dist"]
 }

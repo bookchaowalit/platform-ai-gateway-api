@@ -278,3 +278,24 @@ test('SPEC-003 OpenAI images adapter maps errors to fixed codes and never echoes
     );
   }
 });
+
+test('SPEC-003 a completed report survives a short gateway blip (same report_seq retried)', async () => {
+  const { env: e } = env();
+  let reportCalls = 0;
+  const seqs: number[] = [];
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    if (path.endsWith('/lease')) return new Response(JSON.stringify(leaseBody()), { status: 200 });
+    const body = JSON.parse(String(init?.body));
+    if (path.endsWith('/report')) {
+      reportCalls += 1;
+      seqs.push(body.report_seq);
+      if (body.state === 'completed' && reportCalls === 2) return new Response('{}', { status: 502 });
+    }
+    return new Response('{"ok":true}', { status: 200 });
+  }) as typeof fetch;
+  const b = batch([await signedMessage()]);
+  await handleQueue(b.value, e, { fetch: fetchImpl, adapters: { fake: fakeAdapter(async () => [PNG]) } });
+  assert.deepEqual(seqs, [1, 2, 2]);
+  assert.deepEqual(b.acked, [0]);
+});

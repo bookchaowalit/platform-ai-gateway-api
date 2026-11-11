@@ -1,0 +1,15 @@
+{
+  "name": "@bookchaowalit/solo-ai-media-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SPEC-003 media-worker: Cloudflare queue consumer that calls media providers and stores outputs in R2. Tests run from the repository root (npm test).",
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "4.131.1"
+  }
+}
