@@ -98,6 +98,35 @@ process restarts, as the global guard always did. The `response_format` 400 mess
 `GET /api/ai/status` reports `capabilities` (tools, image input, json_schema, the caller's private route count and
 whether that config parsed) and the image limits.
 
+## Image and video generation (SPEC-003, P1a)
+
+Off until configured; existing routes are unchanged. Spec: `specs/003-media-generation/spec.md`.
+
+| Route | Scope | What |
+|---|---|---|
+| `POST /api/ai/media/requests` | `ai:image` (or `ai:video` for `kind: video`) | Create a request (`profile` or `models`, `prompt`, `route`, `privacy_class` public/internal). 202 with `id`; `dry_run: true` prices without reserving; optional `Idempotency-Key` header |
+| `GET /api/ai/media/requests/:id` | `ai:image` / `ai:video`, same subject | Status, attempts, cost, signed R2 URLs (900 s) |
+| `GET /api/ai/media/models` | `api:read` | Enabled models, capabilities, unit prices, availability |
+| `POST /internal/media/attempts/:id/{lease,report,heartbeat}` | exactly `ai:media-worker` | Worker only |
+
+The gateway keeps job state and money in SQLite (reservations are rows, one ledger row per attempt in
+`ai_run_telemetry`, route `media.*`) and enqueues to `workers/media-worker`, a Cloudflare Worker that calls the
+provider and writes outputs to the private R2 bucket `ai-media`. Model choice, prices and enabled flags live in
+`platform/media-generation-routing.json`; every model ships **disabled and unpriced**.
+
+Gateway variables (Railway): `AI_GATEWAY_MEDIA_ENABLED=true`, `AI_GATEWAY_MEDIA_PROVIDERS` (provider ids the worker
+has keys for, e.g. `openai`), `AI_GATEWAY_MEDIA_MONTHLY_BUDGET_USD` (required), `AI_GATEWAY_MEDIA_PAYLOAD_KEYS_JSON`
+(`{"current":"k1","keys":{"k1":"<base64 32 bytes>"}}`), `AI_GATEWAY_MEDIA_QUEUE_KEY` (32+ chars, same on the worker),
+`AI_GATEWAY_MEDIA_SUBJECT_HASH_KEY`, `AI_GATEWAY_MEDIA_WORKER_URL`, `AI_GATEWAY_MEDIA_WORKER_ENQUEUE_TOKEN`,
+`AI_GATEWAY_MEDIA_R2_ACCOUNT_ID`, `AI_GATEWAY_MEDIA_R2_BUCKET`, `AI_GATEWAY_MEDIA_R2_ACCESS_KEY_ID`,
+`AI_GATEWAY_MEDIA_R2_SECRET_ACCESS_KEY` (R2 token limited to that bucket). Optional: `AI_GATEWAY_MEDIA_IMAGE_RPM`,
+`AI_GATEWAY_MEDIA_READ_RPM`, `AI_GATEWAY_MEDIA_MAX_ACTIVE_PER_SUBJECT`, `AI_GATEWAY_MEDIA_SUBJECT_MODELS_JSON`,
+`AI_GATEWAY_MEDIA_URL_TTL_S`. `GET /api/ai/status` → `media.problems` names whatever is missing (never values).
+
+Worker (`workers/media-worker`, Wrangler): see `wrangler.toml` for the queue, DLQ and bucket to create once and the
+four secrets (`MEDIA_ENQUEUE_TOKEN`, `MEDIA_QUEUE_KEY`, `MEDIA_WORKER_GATEWAY_TOKEN`, `OPENAI_API_KEY`). Deploy with
+`npx wrangler deploy` from that directory; tests run from the repository root.
+
 ## Staged shared admission
 
 The default production behavior remains unchanged. Explicit workspace JWT and

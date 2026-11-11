@@ -7,7 +7,7 @@ Standard: ADR-0004 — TDD + SDD (architecture-docs, `docs/architecture/decision
 | Field | Value |
 |---|---|
 | Spec ID / version | SPEC-003 / 1.0 |
-| Status | approved 2026-11-11 (owner); P1a in progress on branch `spec/003-media-generation`; Q1–Q4 open, Q5 = option A |
+| Status | approved 2026-11-11 (owner); P1a code complete on branch `spec/003-media-generation` (not pushed, not deployed); Q1–Q4 open, Q5 = option A |
 | Repository / path | bookchaowalit/platform-ai-gateway-api / `specs/003-media-generation/spec.md` |
 | Owner (maker) | Claude Code |
 | Reviewer (checker) | Fresh Claude reviewer session (no maker context), plus Codex review at Stop |
@@ -624,11 +624,28 @@ Worker tests run the worker module under the same runner with the Workers bindin
 
 ### Red / green log
 
-Filled during implementation, per phase.
+P1a red runs are local (`npx tsx --test <file>`), committed before the implementation; green is the full local suite
+(`npm test`: 222 pass, 1 skipped as before), `npm run typecheck`, `npm run build`, a local `docker build` + container
+smoke (healthz 200, media off by default), and `wrangler deploy --dry-run` of the worker (14 KiB). CI run URLs are
+added when the branch is pushed. P1b, P2 and P3 rows are added when those phases start.
 
-| Scenario | Test | Red: commit / run + failure message | Green: commit / run | Refactor note |
+| Scenario (P1a) | Test | Red: commit · failure | Green | Note |
 |---|---|---|---|---|
-| AC-01 … AC-22 | — | — | — | — |
+| AC-04, AC-05 | `tests/media_generation_registry.test.ts` | c736bc2 · 9 of 11 fail on a stub; e093531, db68ca0 · shape-check cases (Codex) | dae1f44, 48f4032, 8d841cf | test fix in dae1f44: filter-order case sends public data |
+| §4.4 data, rule 9 | `tests/media_store.test.ts` | 3da0ce8 · `no export MIGRATION_FILES` | 9840313, 48f4032 | 026 later gained subject/workspace (0017bf4) and frozen pricing columns (d71ac0c) before any deploy |
+| §4.4/§4.5 crypto, AC-02 signature, AC-10 macs | `tests/media_crypto.test.ts` | a52ff3f · module missing | cc10ffc, a550e6b, da96c76 | a550e6b: security review — length-prefixed MAC fields (test written with the fix) |
+| AC-01, AC-03, AC-06, AC-07, AC-08, AC-12, AC-16, rules 3–9 | `tests/media_jobs.test.ts` | 0017bf4, 3a2cd96 · 23–24 fail on a stub; 9458676, 5269b07, 7f76d23 · Codex cases | 3dda9f5, da96c76, 9e815e2, d71ac0c, 3db2e3f | race and malformed-registry cases passed on red (guards) |
+| AC-12 signed URLs | `tests/media_r2.test.ts` | f291c3d · stub | 2bc6097 | AWS SigV4 documentation vector |
+| AC-01, AC-02, AC-12, AC-18 (P1a), AC-19 | `tests/media_http.test.ts` | 9c44c59 · no media routes | 9681e93 | `tests/dockerfile.test.ts` caught the missing COPY lines |
+| AC-09, §4.5, rules 4/5/8 | `tests/media_worker.test.ts` | 6dbfba2 · 11 fail on stubs | 671bec4 | report retry through gateway blips added with its test |
+
+**Implementation notes that differ from the text above (to fold into v1.1 at the P1a DoD review):**
+- Option A puts provider credentials on the worker, so the gateway's "credential present" check (§3.4) is
+  `AI_GATEWAY_MEDIA_PROVIDERS` listing the provider id.
+- `AI_GATEWAY_MEDIA_MONTHLY_BUDGET_USD` is **required** (media stays off without it), not optional.
+- `AI_GATEWAY_MEDIA_ENABLED`, `AI_GATEWAY_MEDIA_SUBJECT_HASH_KEY`, the worker URL/enqueue token and the R2 signer are
+  also required for media to be on; `/api/ai/status` lists each missing one by name.
+- Compare, blind, references, video, `/api/ai/images` and the media MCP server are refused or absent in P1a (P1b/P2).
 
 ## 9. Change log
 
