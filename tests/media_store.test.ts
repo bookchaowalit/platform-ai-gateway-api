@@ -100,3 +100,20 @@ test('SPEC-003 §4.4 the image and the bundle ship every migration file', () => 
   const build = JSON.parse(readFileSync(new URL('../api/ai-gateway-service/package.json', import.meta.url), 'utf8')).scripts.build as string;
   assert.match(build, /cpSync\('\.\.\/\.\.\/database\/migrations','dist\/migrations'/);
 });
+
+test('SPEC-003 §4.4 AI_GATEWAY_MIGRATION_PATH names the telemetry file actually read', async () => {
+  const { mkdirSync, writeFileSync, copyFileSync } = await import('node:fs');
+  const dir = mkdtempSync(join(tmpdir(), 'media-migrations-'));
+  try {
+    const source = new URL('../database/migrations/', import.meta.url);
+    copyFileSync(new URL('025_ai_run_telemetry.sql', source), join(dir, '025_ai_run_telemetry.sql'));
+    copyFileSync(new URL('026_media_generation.sql', source), join(dir, '026_media_generation.sql'));
+    mkdirSync(join(dir, 'custom'), { recursive: true });
+    writeFileSync(join(dir, 'telemetry-custom.sql'), '-- custom telemetry marker\n' + readFileSync(join(dir, '025_ai_run_telemetry.sql'), 'utf8'));
+    const sql = loadTelemetryMigration({ AI_GATEWAY_MIGRATION_PATH: join(dir, 'telemetry-custom.sql') });
+    assert.match(sql, /custom telemetry marker/);
+    assert.match(sql, /media_requests/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

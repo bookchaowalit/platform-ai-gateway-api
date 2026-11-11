@@ -193,3 +193,35 @@ test('SPEC-003 AC-04 n multiplies the image reservation', () => {
   assert.equal(result.selected[0].units, 3);
   assert.equal(result.selected[0].reserved_usd, 0.12);
 });
+
+test('SPEC-003 AC-05 malformed capabilities and param maps are problems, not crashes', () => {
+  const cases: Array<[string, (r: MediaGenerationRegistry) => void]> = [
+    ['no capabilities', (r) => { delete (r.models['a-photo'] as Partial<MediaGenerationRegistry['models'][string]>).capabilities; }],
+    ['aspects not array', (r) => { (r.models['a-photo'].capabilities as { aspects: unknown }).aspects = '1:1'; }],
+    ['no param_map', (r) => { delete (r.models['a-photo'] as Partial<MediaGenerationRegistry['models'][string]>).param_map; }],
+    ['seconds not array', (r) => { (r.models['a-photo'].capabilities as { seconds: unknown }).seconds = 5; }],
+  ];
+  for (const [name, mutate] of cases) {
+    const registry = fixture();
+    mutate(registry);
+    const { problems } = validateMediaGenerationRegistry(registry);
+    assert.ok(problems.some((p) => /a-photo.*(capabilities|param_map)/.test(p)), `${name}: ${JSON.stringify(problems)}`);
+  }
+});
+
+test('SPEC-003 AC-04 video uses the profile default seconds when the request has none', () => {
+  const registry = fixture();
+  registry.models['v-clip'] = {
+    provider: 'vendor-a', provider_model: 'clip-1', kind: 'video', enabled: true,
+    capabilities: { aspects: ['9:16'], resolutions: ['standard'], seconds: [5, 10], references: 0 },
+    param_map: { aspect: { '9:16': { size: '720x1280' } }, resolution: { standard: {} } },
+    extra_params: {},
+    pricing: { unit: 'second', cost_source: 'registry', cancel_policy: 'charged', usd: { '9:16|standard': 0.1 }, source: 'https://vendor-a.example/pricing', checked_at: '2026-11-11' },
+    own_eval: null,
+  };
+  registry.profiles['short-clip'] = { kind: 'video', defaults: { aspect: '9:16', seconds: 5 }, models: ['v-clip'] };
+  const result = routeMediaGeneration(registry, { kind: 'video', mode: 'single', profile: 'short-clip', aspect: '9:16', privacy_class: 'internal' }, ctx());
+  assert.deepEqual(result.selected.map((s) => s.model_id), ['v-clip']);
+  assert.equal(result.selected[0].units, 5);
+  assert.equal(result.selected[0].reserved_usd, 0.5);
+});
