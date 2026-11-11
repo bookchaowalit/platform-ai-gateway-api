@@ -460,3 +460,77 @@ test('SPEC-003 §4.7 rule 9 payloads are purged after the request is done', asyn
   await h.jobs.housekeeping();
   assert.equal((h.store.db.prepare('SELECT COUNT(*) AS n FROM media_request_payloads').get() as { n: number }).n, 0);
 });
+
+// ---------------------------------------------------------------- Codex review round (P1a core)
+
+async function submitStarted(h: Harness) {
+  await h.jobs.create(caller, body(), {});
+  const id = h.sent[0].attempt_id;
+  const lease = (await startLease(h)).body as { lease_id: string; attempt: { object_key_prefix: string } };
+  await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 1, state: 'submit_started' });
+  return { id, lease };
+}
+
+const asset = (prefix: string) => ({ object_key: `${prefix}late.png`, media_type: 'image/png', bytes: 10, sha256: 'a'.repeat(64) });
+
+test('Codex: a report racing the attempt TTL cannot settle twice or flip the terminal state', async () => {
+  const h = harness();
+  const { id, lease } = await submitStarted(h);
+  h.clock.now += 61 * 60_000;
+  const [reported] = await Promise.all([
+    h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 2, state: 'completed', assets: [asset(lease.attempt.object_key_prefix)] }),
+    h.jobs.housekeeping(),
+  ]);
+  assert.equal(reported.status, 409);
+  assert.equal(attemptRow(h, id).status, 'failed');
+  assert.equal(attemptRow(h, id).error_code, 'timeout');
+  assert.equal((h.store.db.prepare("SELECT COUNT(*) AS n FROM ai_run_telemetry WHERE route LIKE 'media.%'").get() as { n: number }).n, 1);
+});
+
+test('Codex: a late completed report after timeout keeps the asset, flags late_report, settles nothing more (rule 3)', async () => {
+  const h = harness();
+  const { id, lease } = await submitStarted(h);
+  h.clock.now += 61 * 60_000;
+  await h.jobs.housekeeping();
+  const late = await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 2, state: 'completed', assets: [asset(lease.attempt.object_key_prefix)] });
+  assert.equal(late.status, 409);
+  assert.equal((h.store.db.prepare('SELECT COUNT(*) AS n FROM media_assets WHERE attempt_id = ?').get(id) as { n: number }).n, 1);
+  assert.match(String(attemptRow(h, id).flags), /late_report/);
+  assert.equal(attemptRow(h, id).cost_usd, 0.04);
+  assert.equal((h.store.db.prepare("SELECT COUNT(*) AS n FROM ai_run_telemetry WHERE route LIKE 'media.%'").get() as { n: number }).n, 1);
+  const forged = await h.jobs.report(id, { lease_id: 'not-the-lease', report_seq: 3, state: 'completed', assets: [asset(lease.attempt.object_key_prefix)] });
+  assert.equal(forged.status, 409);
+  assert.equal((h.store.db.prepare('SELECT COUNT(*) AS n FROM media_assets WHERE attempt_id = ?').get(id) as { n: number }).n, 1);
+});
+
+test('Codex: if the ledger write fails the attempt stays open (state and ledger in one transaction)', async () => {
+  let fail = false;
+  const h = harness();
+  const store = openTelemetryStore(':memory:', loadTelemetryMigration({}));
+  const sent: SignedQueueMessage[] = [];
+  assert.ok(PAYLOAD_KEYS.ok);
+  const jobs = createMediaJobs({
+    db: store.db, record: (event) => { if (fail) throw new Error('disk full'); store.record(event); }, registry: registry(), env: h.env,
+    payloadKeys: PAYLOAD_KEYS.keys, queueKey: QUEUE_KEY, now: () => new Date(h.clock.now), enqueue: async (m) => { sent.push(m); },
+  });
+  await jobs.create(caller, body(), {});
+  const lease = (await jobs.lease(sent[0].attempt_id, { reason: 'start', dispatch_no: sent[0].dispatch_no, sig: sent[0].sig })).body as { lease_id: string };
+  fail = true;
+  await assert.rejects(jobs.report(sent[0].attempt_id, { lease_id: lease.lease_id, report_seq: 1, state: 'failed', error_code: 'invalid_input' }), /disk full/);
+  const row = store.db.prepare('SELECT status, cost_usd FROM media_attempts').get() as Record<string, unknown>;
+  assert.deepEqual({ ...row }, { status: 'leased', cost_usd: null });
+  fail = false;
+  assert.equal((await jobs.report(sent[0].attempt_id, { lease_id: lease.lease_id, report_seq: 1, state: 'failed', error_code: 'invalid_input' })).status, 200);
+});
+
+test('Codex: a malformed registry keeps media off without throwing', async () => {
+  assert.ok(PAYLOAD_KEYS.ok);
+  const store = openTelemetryStore(':memory:', loadTelemetryMigration({}));
+  const broken = { ...registry(), providers: [] as unknown, models: 'nope' as unknown } as unknown as MediaGenerationRegistry;
+  const jobs = createMediaJobs({
+    db: store.db, record: () => undefined, registry: broken, env: { AI_GATEWAY_MEDIA_ENABLED: 'true', AI_GATEWAY_MEDIA_PROVIDERS: 'vendor-a', AI_GATEWAY_MEDIA_MONTHLY_BUDGET_USD: '1', AI_GATEWAY_MEDIA_SUBJECT_HASH_KEY: 'MARKER_subject_hash_key' },
+    payloadKeys: PAYLOAD_KEYS.keys, queueKey: QUEUE_KEY, now: () => new Date(), enqueue: async () => undefined,
+  });
+  assert.ok(jobs.problems().some((p) => p.startsWith('registry:')));
+  assert.equal((await jobs.create(caller, body(), {})).status, 503);
+});

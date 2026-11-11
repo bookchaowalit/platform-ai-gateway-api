@@ -110,3 +110,11 @@ test('SPEC-003 §4.5 macs are length-prefixed and messages are format-checked be
     assert.equal(await verify(QUEUE_KEY, bad as never), false, JSON.stringify(bad));
   }
 });
+
+test('Codex: base64 that atob rejects is a problem, not a throw', () => {
+  for (const material of ['A', 'AB=C', 'A===']) {
+    let parsed: ReturnType<typeof parsePayloadKeys> | undefined;
+    assert.doesNotThrow(() => { parsed = parsePayloadKeys(JSON.stringify({ current: 'k1', keys: { k1: material } })); }, material);
+    assert.equal(parsed?.ok, false, material);
+  }
+});
