@@ -4,6 +4,8 @@
 CREATE TABLE IF NOT EXISTS media_requests (
     id TEXT PRIMARY KEY,
     subject_key TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT '',
     kind TEXT NOT NULL CHECK (kind IN ('image', 'video')),
     mode TEXT NOT NULL CHECK (mode IN ('single', 'compare')),
     blind INTEGER NOT NULL DEFAULT 0 CHECK (blind IN (0, 1)),

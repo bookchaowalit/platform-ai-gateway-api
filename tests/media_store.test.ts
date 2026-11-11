@@ -50,8 +50,8 @@ test('SPEC-003 §4.4 one idempotency key per subject while set, free once NULL',
     const store = openTelemetryStore(path, loadTelemetryMigration({}));
     try {
       const insert = store.db.prepare(`INSERT INTO media_requests
-        (id, subject_key, kind, mode, blind, route, status, reserved_usd, settled_usd, prompt_sha256, request_hash, idempotency_key)
-        VALUES (?, 'client-a', 'image', 'single', 0, 'media.image', 'queued', 0.04, 0, 'p', 'h', ?)`);
+        (id, subject_key, subject, kind, mode, blind, route, status, reserved_usd, settled_usd, prompt_sha256, request_hash, idempotency_key)
+        VALUES (?, 'client-a', 'client-a', 'image', 'single', 0, 'media.image', 'queued', 0.04, 0, 'p', 'h', ?)`);
       insert.run('r1', 'key-1');
       assert.throws(() => insert.run('r2', 'key-1'), /UNIQUE/);
       insert.run('r3', null);
