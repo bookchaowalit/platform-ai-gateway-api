@@ -212,6 +212,10 @@ function checkModel(id: string, model: unknown, providers: Record<string, unknow
   if (typeof model.provider_model !== 'string' || model.provider_model === '') problems.push(`model ${id}: provider_model is missing`);
   if (model.kind !== 'image' && model.kind !== 'video') problems.push(`model ${id}: kind is invalid`);
   if (typeof model.enabled !== 'boolean') problems.push(`model ${id}: enabled must be a boolean`);
+  // Setup-day guard: an enabled model must name a real provider model.
+  if (model.enabled === true && (model.provider_model === 'set-on-setup-day' || !/^[A-Za-z0-9._:/-]{1,128}$/.test(String(model.provider_model)))) {
+    problems.push(`model ${id}: provider_model is not set for an enabled model`);
+  }
 
   const caps = model.capabilities;
   if (!isObject(caps) || !isStringArray(caps.aspects) || !isStringArray(caps.resolutions)
@@ -269,6 +273,7 @@ function checkModel(id: string, model: unknown, providers: Record<string, unknow
     return;
   }
   const prices = Object.entries(pricing.usd);
+  if (model.enabled === true && prices.length === 0) problems.push(`model ${id}: enabled model has no prices`);
   for (const [key, usd] of prices) {
     if (typeof usd !== 'number' || !Number.isFinite(usd) || usd < 0) problems.push(`model ${id}: price ${key} is negative or not a number`);
   }

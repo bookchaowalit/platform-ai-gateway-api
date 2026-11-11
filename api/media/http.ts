@@ -111,7 +111,10 @@ export function createMediaHttp(deps: MediaHttpDeps): MediaHttp {
   function problems(): string[] {
     const list = [...jobs.problems()];
     if (!signer.ok) list.push(signer.problem);
-    if (!workerUrl || !/^https?:\/\//.test(workerUrl)) list.push('AI_GATEWAY_MEDIA_WORKER_URL is not set');
+    // https only: the enqueue token travels with every call (plain http is allowed for loopback tests).
+    if (!/^https:\/\/[^\s/]+/.test(workerUrl) && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/|$)/.test(workerUrl)) {
+      list.push('AI_GATEWAY_MEDIA_WORKER_URL is not set (https URL required)');
+    }
     if (!enqueueToken) list.push('AI_GATEWAY_MEDIA_WORKER_ENQUEUE_TOKEN is not set');
     if (!keys.ok) list.push(keys.problem);
     return [...new Set(list)];
@@ -304,6 +307,10 @@ export function createMediaHttp(deps: MediaHttpDeps): MediaHttp {
 
   function startHousekeeping(intervalMs: number): () => void {
     if (!(intervalMs > 0)) return () => undefined;
+    // One pass at startup: pending sends and expired leases from before a restart do not wait a tick.
+    setImmediate(() => {
+      jobs.housekeeping().catch(() => undefined);
+    });
     // Runs even while admission is off: open jobs must still time out, reservations close and payloads purge.
     const timer = setInterval(() => {
       jobs.housekeeping().catch((error: unknown) => {

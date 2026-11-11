@@ -161,7 +161,12 @@ function gatewayClient(env: WorkerEnv, fetchImpl: typeof fetch) {
     } catch {
       throw new GatewayDown('gateway unreachable');
     }
-    if (response.status >= 500) throw new GatewayDown(`gateway ${response.status}`);
+    // 5xx, 408 and 429 are the gateway (or its limiter) being unavailable; 401/403 on a report/heartbeat
+    // after a valid lease mean a token rotation in progress. All are retried later, never dropped.
+    if (response.status >= 500 || response.status === 408 || response.status === 429
+      || (action !== 'lease' && (response.status === 401 || response.status === 403))) {
+      throw new GatewayDown(`gateway ${response.status}`);
+    }
     let parsed: Record<string, unknown> = {};
     try {
       parsed = await response.json() as Record<string, unknown>;
@@ -274,14 +279,20 @@ async function processMessage(message: SignedQueueMessage, env: WorkerEnv, deps:
     }
 
     const assets = [];
-    for (let i = 0; i < outputs.length; i += 1) {
-      const bytes = outputs[i].bytes;
-      const key = `${attempt.object_key_prefix}${message.attempt_id}-${i}.${format === 'jpeg' ? 'jpg' : format}`;
-      await env.MEDIA_BUCKET.put(key, bytes, {
-        httpMetadata: { contentType: CONTENT_TYPE[format] },
-        customMetadata: { ai_generated: 'true', attempt_id: message.attempt_id },
-      });
-      assets.push({ object_key: key, media_type: CONTENT_TYPE[format], bytes: bytes.length, sha256: await sha256(bytes) });
+    try {
+      for (let i = 0; i < outputs.length; i += 1) {
+        const bytes = outputs[i].bytes;
+        const key = `${attempt.object_key_prefix}${message.attempt_id}-${i}.${format === 'jpeg' ? 'jpg' : format}`;
+        await env.MEDIA_BUCKET.put(key, bytes, {
+          httpMetadata: { contentType: CONTENT_TYPE[format] },
+          customMetadata: { ai_generated: 'true', attempt_id: message.attempt_id },
+        });
+        assets.push({ object_key: key, media_type: CONTENT_TYPE[format], bytes: bytes.length, sha256: await sha256(bytes) });
+      }
+    } catch {
+      // Storage failed after a paid generation: report it (the reservation settles), never re-run the call.
+      await report({ state: 'failed', error_code: 'provider_error' });
+      return 'ack';
     }
     await report({ state: 'completed', assets });
     return 'ack';

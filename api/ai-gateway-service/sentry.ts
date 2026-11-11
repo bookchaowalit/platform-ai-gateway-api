@@ -31,6 +31,8 @@ const BEARER = /\bbearer\s+[A-Za-z0-9._~+/=-]+/gi;
 const JWT = /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g;
 // SPEC-002: image payloads (customer documents) never leave in an error message.
 const DATA_IMAGE = /data:image\/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g;
+// SPEC-003 AC-16: presigned R2/S3 URLs grant read access until they expire.
+const AMZ_QUERY = /\b(X-Amz-(?:Signature|Credential|Security-Token))=[^&\s"']+/gi;
 
 export function scrub(text: string): string {
   return text
@@ -38,7 +40,8 @@ export function scrub(text: string): string {
     .replace(KV_SECRET, '$1$2***')
     .replace(BEARER, 'Bearer ***')
     .replace(JWT, '***jwt***')
-    .replace(DATA_IMAGE, 'data:image/***;base64,***');
+    .replace(DATA_IMAGE, 'data:image/***;base64,***')
+    .replace(AMZ_QUERY, '$1=***');
 }
 
 export function scrubEvent(event: SentryEvent): SentryEvent {

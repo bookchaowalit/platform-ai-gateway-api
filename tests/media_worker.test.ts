@@ -381,7 +381,8 @@ test('DoD B2 the worker heartbeats every 60 s while the provider call runs', asy
     const slow = fakeAdapter(() => new Promise<Uint8Array[]>((resolve) => { finish = resolve; }));
     const b = batch([await signedMessage()]);
     const running = handleQueue(b.value, e, { fetch: gw.fetchImpl, adapters: { fake: slow } });
-    await new Promise((resolve) => setImmediate(resolve));
+    for (let i = 0; i < 200 && slow.calls === 0; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(slow.calls, 1, 'the provider call is running');
     for (let i = 0; i < 3; i += 1) {
       mock.timers.tick(60_000);
       await new Promise((resolve) => setImmediate(resolve));

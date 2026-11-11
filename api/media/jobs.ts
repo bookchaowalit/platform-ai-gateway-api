@@ -123,6 +123,8 @@ interface RequestRow {
   workspace_id: string;
   kind: MediaKind;
   mode: 'single' | 'compare';
+  profile: string | null;
+  prompt_sha256: string;
   route: string;
   status: string;
   reserved_usd: number;
@@ -212,7 +214,8 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
   const providersAvailable = new Set((env.AI_GATEWAY_MEDIA_PROVIDERS || '').split(',').map((p) => p.trim()).filter(Boolean));
   const maxPrompt = intEnv(env.AI_GATEWAY_MEDIA_MAX_PROMPT_CHARS, 4_000, 1, 32_000);
   const maxActive = intEnv(env.AI_GATEWAY_MEDIA_MAX_ACTIVE_PER_SUBJECT, 4, 1, 1_000);
-  const retentionDays = intEnv(env.AI_GATEWAY_MEDIA_RETENTION_DAYS, 30, 1, 3_650);
+  // Never longer than the bucket's 30-day lifecycle rule, or reads would sign URLs for deleted objects.
+  const retentionDays = Math.min(intEnv(env.AI_GATEWAY_MEDIA_RETENTION_DAYS, 30, 1, 3_650), 30);
   const subjectHashKey = (env.AI_GATEWAY_MEDIA_SUBJECT_HASH_KEY || '').trim();
   let subjectModels: Record<string, string[]> | null | 'invalid' = null;
   if ((env.AI_GATEWAY_MEDIA_SUBJECT_MODELS_JSON || '').trim()) {
@@ -352,7 +355,8 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
     if (options.idempotencyKey !== undefined && !IDEMPOTENCY_KEY.test(options.idempotencyKey)) return problem(400, 'invalid_request', { detail: 'Idempotency-Key is invalid' });
     const subjectKey = aiBudgetKey(caller);
     const budgetCaller = { subject: caller.subject, workspace: caller.workspace };
-    const allowedModels = subjectModels && subjectModels !== 'invalid' ? subjectModels[subjectKey] : undefined;
+    // Own properties only: a subject named constructor / __proto__ must not hit the prototype.
+    const allowedModels = subjectModels && subjectModels !== 'invalid' && Object.hasOwn(subjectModels, subjectKey) ? subjectModels[subjectKey] : undefined;
     const credentialProviders = new Map(Object.entries(registry.providers).map(([id, p]) => [p.credential_env, id]));
     const routeOnce = (budgetAllows: (usd: number) => boolean) => routeMediaGeneration(registry, request, {
       now: now(),
@@ -536,11 +540,21 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
     if (Number(changed.changes) !== 1) return false;
     deleteSlot.run(attempt.id);
     const request = selectRequest.get(attempt.request_id) as unknown as RequestRow;
+    const bytes = (db.prepare('SELECT COALESCE(SUM(bytes), 0) AS b FROM media_assets WHERE attempt_id = ?').get(attempt.id) as { b: number }).b;
+    // AC-16 ledger fields: counts and ids only, never prompt text or object keys.
     const metadata: AiTelemetryEvent['metadata'] = {
       subject: request.subject,
       kind: request.kind,
       mode: request.mode,
+      profile: request.profile,
+      media_route: request.route,
+      prompt_sha256: request.prompt_sha256,
+      model_id: attempt.model_id,
+      provider_id: attempt.provider_id,
+      n: request.kind === 'image' ? attempt.expected_outputs : null,
+      seconds: request.kind === 'video' ? attempt.units : null,
       units: attempt.units,
+      bytes,
       attempt_status: status,
       error_code: errorCode,
     };
@@ -945,6 +959,20 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
         AND NOT EXISTS (SELECT 1 FROM media_attempts a WHERE a.request_id = r.id AND a.status IN ('queued', 'leased', 'submit_started', 'submitted')))`);
   const freeIdempotency = db.prepare('UPDATE media_requests SET idempotency_key = NULL WHERE idempotency_key IS NOT NULL AND created_at <= ?');
   const reclaimSlots = db.prepare('DELETE FROM media_provider_slots WHERE deadline <= ?');
+  const ROW_RETENTION_MS = 400 * 86_400_000;
+  const pruneStatements = [
+    `DELETE FROM media_votes WHERE request_id IN (SELECT id FROM media_requests WHERE created_at <= ?1)`,
+    `DELETE FROM media_assets WHERE attempt_id IN (SELECT a.id FROM media_attempts a JOIN media_requests r ON r.id = a.request_id WHERE r.created_at <= ?1)`,
+    `DELETE FROM media_assets WHERE attempt_id IS NULL AND created_at <= ?1`,
+    `DELETE FROM media_request_payloads WHERE request_id IN (SELECT id FROM media_requests WHERE created_at <= ?1)`,
+    `DELETE FROM media_attempts WHERE request_id IN (SELECT id FROM media_requests WHERE created_at <= ?1)
+       AND status IN ('completed', 'failed', 'cancelled', 'expired')`,
+    `DELETE FROM media_requests WHERE created_at <= ?1 AND NOT EXISTS (SELECT 1 FROM media_attempts a WHERE a.request_id = media_requests.id)`,
+  ].map((sql) => db.prepare(sql));
+  /** §4.4: request, attempt, vote and asset rows are kept 400 days (they hold no content). */
+  function pruneOld(cutoff: string): void {
+    atomically(() => { for (const statement of pruneStatements) statement.run(cutoff); });
+  }
   let running = false;
 
   async function housekeeping(): Promise<void> {
@@ -968,6 +996,8 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
             settle(attempt, 'failed', 'dispatch_error', 0);
             continue;
           }
+          // After the window a leased or submit-started attempt follows the lease path, not re-sends (rule 7).
+          if (age >= DISPATCH_WINDOW_MS && (attempt.first_leased_at || attempt.submit_started_at)) continue;
           if (ms(attempt.next_dispatch_at) <= at.getTime()) due.push(attempt.id);
           continue;
         }
@@ -988,6 +1018,7 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
       purgePayloads.run(iso(at), iso(at.getTime() - PAYLOAD_KEEP_AFTER_DONE_MS));
       freeIdempotency.run(iso(at.getTime() - IDEMPOTENCY_WINDOW_MS));
       pruneCalls.run(iso(at.getTime() - 60_000));
+      pruneOld(iso(at.getTime() - ROW_RETENTION_MS));
     } finally {
       running = false;
     }

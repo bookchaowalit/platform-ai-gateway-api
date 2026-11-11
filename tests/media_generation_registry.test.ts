@@ -111,8 +111,9 @@ test('SPEC-003 AC-05 invalid registries fail closed', () => {
   }
 });
 
-test('SPEC-003 AC-05 a model with no prices is valid but never routable', () => {
+test('SPEC-003 AC-05 a disabled model with no prices is valid but never routable', () => {
   const registry = fixture();
+  registry.models['a-cheap'].enabled = false; // DoD N7: an enabled model must have prices
   registry.models['a-cheap'].pricing = { unit: 'image', cost_source: 'registry', cancel_policy: 'free', usd: {}, source: '', checked_at: '' };
   assert.deepEqual(validateMediaGenerationRegistry(registry).problems, []);
 });
