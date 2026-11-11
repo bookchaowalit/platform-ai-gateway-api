@@ -101,6 +101,9 @@ interface AttemptRow {
   provider_job_ref: string | null;
   units: number;
   unit_price_usd: number;
+  cost_source: 'registry' | 'provider';
+  cancel_policy: 'free' | 'charged';
+  expected_outputs: number;
   reserved_usd: number;
   cost_usd: number | null;
   flags: string;
@@ -330,8 +333,8 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
   const insertPayload = db.prepare(`INSERT INTO media_request_payloads (request_id, ciphertext, nonce, key_id, created_at, purge_after) VALUES (?, ?, ?, ?, ?, ?)`);
   const insertAttempt = db.prepare(`INSERT INTO media_attempts
     (id, request_id, subject_key, attempt_no, model_id, provider_id, status, dispatch_state, dispatch_tries, dispatch_no, next_dispatch_at,
-     units, unit_price_usd, reserved_usd, created_at, updated_at)
-    VALUES (?, ?, ?, 1, ?, ?, 'queued', 'pending', 0, ?, ?, ?, ?, ?, ?, ?)`);
+     units, unit_price_usd, cost_source, cancel_policy, expected_outputs, reserved_usd, created_at, updated_at)
+    VALUES (?, ?, ?, 1, ?, ?, 'queued', 'pending', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
   function existingResponse(row: RequestRow): MediaResult {
     const attempts = (db.prepare('SELECT COUNT(*) AS n FROM media_attempts WHERE request_id = ?').get(row.id) as { n: number }).n;
@@ -417,8 +420,10 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
             for (const pick of routed.selected) {
               const attemptId = randomId();
               attemptIds.push(attemptId);
+              const pricing = registry.models[pick.model_id].pricing;
               insertAttempt.run(attemptId, requestId, subjectKey, pick.model_id, pick.provider_id, randomId(12), iso(at),
-                pick.units, pick.unit_price_usd, pick.reserved_usd, iso(at), iso(at));
+                pick.units, pick.unit_price_usd, pricing.cost_source, pricing.cancel_policy,
+                request.kind === 'image' ? (request.n ?? 1) : 1, pick.reserved_usd, iso(at), iso(at));
             }
             outcome = {
               status: 202,
@@ -610,6 +615,8 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
 
     // Everything below is synchronous: one transaction decides the lease.
     const payloadNeeded = reason === 'start' && (attempt.status === 'queued' || attempt.status === 'leased' || attempt.status === 'submit_started');
+    // No keyring (misconfiguration): refuse before granting anything, so the worker retries later.
+    if (payloadNeeded && !deps.payloadKeys) return problem(503, 'media_disabled');
     let refExpected: string | undefined;
     if (reason === 'webhook' && attempt.provider_job_ref) refExpected = await refMac(deps.queueKey, attempt.provider_job_ref);
     const objectPrefix = `${(selectRequest.get(attempt.request_id) as unknown as RequestRow).kind === 'image' ? 'images' : 'videos'}/${await subjectHash(subjectHashKey, attempt.subject_key)}/${at.toISOString().slice(0, 4)}/${at.toISOString().slice(5, 7)}/`;
@@ -717,8 +724,9 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
   const insertAsset = db.prepare(`INSERT INTO media_assets (id, subject_key, attempt_id, role, state, object_key, media_type, bytes, width, height, seconds, sha256, created_at)
       VALUES (?, ?, ?, 'output', 'ready', ?, ?, ?, ?, ?, ?, ?, ?)`);
 
-  function validAssets(raw: unknown, prefix: string): Array<Record<string, unknown>> | string {
-    if (!Array.isArray(raw) || raw.length === 0 || raw.length > 8) return 'assets must list 1 to 8 outputs';
+  function validAssets(raw: unknown, prefix: string, expected: number): Array<Record<string, unknown>> | string {
+    if (!Array.isArray(raw) || raw.length !== expected) return `assets must list exactly ${expected} outputs`;
+    if (new Set(raw.map((a) => (isObject(a) ? a.object_key : undefined))).size !== raw.length) return 'asset object keys must be distinct';
     for (const asset of raw) {
       if (!isObject(asset)) return 'asset must be an object';
       if (typeof asset.object_key !== 'string' || !asset.object_key.startsWith(prefix) || !/^[A-Za-z0-9/_.-]{1,256}$/.test(asset.object_key) || asset.object_key.includes('..')) return 'asset object_key is outside the leased prefix';
@@ -772,7 +780,7 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
       if (leaseMatches) {
         addFlag.run('late_report', attempt.id, 'late_report');
         if (state === 'completed' && attempt.status === 'failed' && (attempt.error_code === 'timeout' || attempt.error_code === 'submit_unknown')) {
-          const assets = validAssets(raw.assets, prefix);
+          const assets = validAssets(raw.assets, prefix, attempt.expected_outputs);
           const already = (db.prepare('SELECT COUNT(*) AS n FROM media_assets WHERE attempt_id = ?').get(attempt.id) as { n: number }).n;
           if (typeof assets !== 'string' && already === 0) insertAssets(attempt, assets, at);
         }
@@ -797,13 +805,12 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
       }
       case 'completed': {
         if (attempt.status !== 'submit_started' && attempt.status !== 'submitted') return fail(409, 'wrong_state');
-        const assets = validAssets(raw.assets, prefix);
+        const assets = validAssets(raw.assets, prefix, attempt.expected_outputs);
         if (typeof assets === 'string') return fail(400, 'invalid_request', { detail: assets });
-        const model = registry.models[attempt.model_id];
         let cost = money(attempt.unit_price_usd * attempt.units);
         let overspend = 0;
         let costMissing = false;
-        if (model?.pricing.cost_source === 'provider') {
+        if (attempt.cost_source === 'provider') {
           const reported = raw.provider_cost_usd;
           if (typeof reported === 'number' && Number.isFinite(reported) && reported >= 0) {
             cost = money(reported);
@@ -830,8 +837,7 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
       }
       case 'cancelled': {
         if (!attempt.cancel_requested_at) return fail(409, 'wrong_state');
-        const model = registry.models[attempt.model_id];
-        settleInside(attempt, 'cancelled', 'cancelled', attempt.submit_started_at && model?.pricing.cancel_policy === 'charged' ? attempt.reserved_usd : 0, 0);
+        settleInside(attempt, 'cancelled', 'cancelled', attempt.submit_started_at && attempt.cancel_policy === 'charged' ? attempt.reserved_usd : 0, 0);
         return { status: 200, body: { ok: true } };
       }
       default:

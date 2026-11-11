@@ -58,6 +58,10 @@ CREATE TABLE IF NOT EXISTS media_attempts (
     provider_job_ref TEXT,
     units REAL NOT NULL,
     unit_price_usd REAL NOT NULL,
+    -- Frozen at admission so a later registry deploy cannot change how this attempt is settled.
+    cost_source TEXT NOT NULL DEFAULT 'registry' CHECK (cost_source IN ('registry', 'provider')),
+    cancel_policy TEXT NOT NULL DEFAULT 'free' CHECK (cancel_policy IN ('free', 'charged')),
+    expected_outputs INTEGER NOT NULL DEFAULT 1 CHECK (expected_outputs >= 1),
     reserved_usd REAL NOT NULL CHECK (reserved_usd >= 0),
     cost_usd REAL CHECK (cost_usd IS NULL OR cost_usd >= 0),
     overspend_usd REAL NOT NULL DEFAULT 0,
