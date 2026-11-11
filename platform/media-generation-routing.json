@@ -1,7 +1,7 @@
 {
   "schema_version": "solo-empire.media-generation-routing.v1",
   "updated_at": "2026-11-11",
-  "description": "SPEC-003 media generation registry. Rankings, prices and enabled flags change here, never in code. Every model ships disabled with no prices: the owner sets provider_model, prices (from the provider's pricing page, with source and checked_at) and enabled on setup day (SPEC-003 Q1, Q4).",
+  "description": "SPEC-003 media generation registry. Rankings, prices and enabled flags change here, never in code. Every model ships disabled with no prices: the owner sets provider_model, prices (from the provider's pricing page, with source and checked_at) and enabled on setup day (SPEC-003 Q1, Q4). openai-image (gpt-image-1.5): each price = the per-image output price from the model page + 0.01 USD prompt allowance (text input 5 USD / 1M tokens x 2,000 tokens), which covers AI_GATEWAY_MEDIA_MAX_PROMPT_CHARS=1000 at up to 2 tokens per character; raise the allowance before raising that cap.",
   "policy": {
     "max_evaluation_age_days": 60,
     "external_privacy_classes": ["public", "internal"],
@@ -55,15 +55,15 @@
         "cost_source": "registry",
         "cancel_policy": "free",
         "usd": {
-          "1:1|draft": 0.009,
-          "1:1|standard": 0.034,
-          "1:1|high": 0.133,
-          "3:2|draft": 0.013,
-          "3:2|standard": 0.05,
-          "3:2|high": 0.2,
-          "2:3|draft": 0.013,
-          "2:3|standard": 0.05,
-          "2:3|high": 0.2
+          "1:1|draft": 0.019,
+          "1:1|standard": 0.044,
+          "1:1|high": 0.143,
+          "3:2|draft": 0.023,
+          "3:2|standard": 0.06,
+          "3:2|high": 0.21,
+          "2:3|draft": 0.023,
+          "2:3|standard": 0.06,
+          "2:3|high": 0.21
         },
         "source": "https://developers.openai.com/api/docs/models/gpt-image-1.5",
         "checked_at": "2026-11-11"
