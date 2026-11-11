@@ -618,3 +618,41 @@ test('a lease for a model removed from a later registry is a retryable 503, not 
   assert.equal(result.status, 503);
   assert.equal(attemptRow(h, message.attempt_id).status, 'queued');
 });
+
+test('Codex: a repeated submit_started with the same report_seq is an idempotent 200', async () => {
+  const h = harness();
+  await h.jobs.create(caller, body(), {});
+  const id = h.sent[0].attempt_id;
+  const lease = (await startLease(h)).body as { lease_id: string };
+  assert.equal((await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 1, state: 'submit_started' })).status, 200);
+  assert.equal((await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 1, state: 'submit_started' })).status, 200);
+  assert.equal((await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 1, state: 'failed', error_code: 'provider_error' })).status, 409, 'a different report with an old seq is still stale');
+});
+
+test('Codex: housekeeping keeps closing jobs after media is switched off', async () => {
+  const h = harness();
+  await h.jobs.create(caller, body(), {});
+  const off = createMediaJobs({
+    db: h.store.db, record: (e) => h.store.record(e), registry: registry(), env: { ...h.env, AI_GATEWAY_MEDIA_ENABLED: '' },
+    payloadKeys: PAYLOAD_KEYS.ok ? PAYLOAD_KEYS.keys : undefined, queueKey: QUEUE_KEY, now: () => new Date(h.clock.now), enqueue: async () => undefined,
+  });
+  assert.ok(off.problems().length > 0);
+  h.clock.now += 61 * 60_000;
+  await off.housekeeping();
+  assert.equal(attemptRow(h, h.sent[0].attempt_id).status, 'failed');
+});
+
+test('Codex: a late completed report from a lease that was recovered is still linked (lease history)', async () => {
+  const h = harness();
+  const { id, lease } = await submitStarted(h);
+  h.clock.now += 121_000;
+  await h.jobs.housekeeping(); // lease expired and recovered: lease_id cleared, still submit_started
+  assert.equal(attemptRow(h, id).lease_id, null);
+  h.clock.now += 61 * 60_000;
+  await h.jobs.housekeeping(); // TTL closes it
+  assert.equal(attemptRow(h, id).error_code, 'timeout');
+  const late = await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 2, state: 'completed', assets: [asset(lease.attempt.object_key_prefix)] });
+  assert.equal(late.status, 409);
+  assert.equal((h.store.db.prepare('SELECT COUNT(*) AS n FROM media_assets WHERE attempt_id = ?').get(id) as { n: number }).n, 1);
+  assert.equal((h.store.db.prepare("SELECT COUNT(*) AS n FROM ai_run_telemetry WHERE route LIKE 'media.%'").get() as { n: number }).n, 1);
+});

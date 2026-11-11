@@ -240,3 +240,72 @@ test('SPEC-003 a failing worker enqueue still answers 202 and leaves the attempt
     await gateway.stop();
   }
 });
+
+// ---------------------------------------------------------------- Codex review (HTTP)
+
+import { generateKeyPairSync, randomUUID } from 'node:crypto';
+import { SignJWT, createLocalJWKSet, exportJWK } from 'jose';
+
+async function startWith(env: NodeJS.ProcessEnv, identityKeys?: Parameters<typeof createAiGatewayService>[0]['identityKeys']) {
+  const store = openTelemetryStore(':memory:', loadTelemetryMigration({}));
+  const service = createAiGatewayService({ env, store, log: () => undefined, mediaRegistry: registry(), mediaHousekeepingMs: 0, identityKeys });
+  const url = await listen(service.server);
+  return { url, store, stop: async () => { await close(service.server); store.close(); } };
+}
+
+test('Codex: identity JWTs with ai:image can create media; the worker still uses its static token', async () => {
+  const issuer = 'https://identity.example.test';
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const keys = createLocalJWKSet({ keys: [{ ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256' }] });
+  const token = async (scope: string) => {
+    const now = Math.floor(Date.now() / 1000);
+    return new SignJWT({ ws: randomUUID(), scope, jti: randomUUID() }).setProtectedHeader({ alg: 'RS256', kid: 'k1' })
+      .setIssuer(issuer).setAudience('ai-api').setSubject(randomUUID()).setIssuedAt(now).setExpirationTime(now + 900).sign(privateKey);
+  };
+  const worker = await fakeWorker();
+  const gateway = await startWith(mediaEnv(worker.url, { AI_GATEWAY_AUTH_PROFILE: 'identity', AI_GATEWAY_IDENTITY_ISSUER: issuer }), keys);
+  try {
+    assert.equal((await call(gateway.url, '/api/ai/media/requests', await token('ai:image'), { body: createBody() })).status, 202);
+    assert.equal((await call(gateway.url, '/api/ai/media/requests', await token('ai:generate'), { body: createBody() })).status, 403);
+    const message = worker.messages[0];
+    const lease = await call(gateway.url, `/internal/media/attempts/${message.attempt_id}/lease`, WORKER_TOKEN, { body: { reason: message.reason, dispatch_no: message.dispatch_no, sig: message.sig } });
+    assert.equal(lease.status, 200);
+    assert.equal((await call(gateway.url, `/internal/media/attempts/${message.attempt_id}/lease`, await token('ai:media-worker'), { body: {} })).status, 403, 'JWTs never reach worker routes');
+  } finally {
+    await gateway.stop();
+    await close(worker.server);
+  }
+});
+
+test('Codex: under the workspace-jwt profile the worker routes still accept the static ai:media-worker token', async () => {
+  const { publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const worker = await fakeWorker();
+  const gateway = await startWith(mediaEnv(worker.url, {
+    AI_GATEWAY_AUTH_PROFILE: 'workspace-jwt',
+    AI_GATEWAY_JWT_ISSUER: 'https://platform.example.test',
+    AI_GATEWAY_JWT_PUBLIC_KEY_PEM: publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+  }));
+  try {
+    const response = await call(gateway.url, '/internal/media/attempts/abc12345/lease', WORKER_TOKEN, { body: { reason: 'start', dispatch_no: 'x', sig: 'y' } });
+    assert.equal(response.status, 403);
+    assert.equal((await response.json() as { error: string }).error, 'bad_signature', 'authenticated, then refused on the message signature');
+  } finally {
+    await gateway.stop();
+    await close(worker.server);
+  }
+});
+
+test('Codex: reads need the scope of the request kind (ai:video cannot read an image request)', async () => {
+  const VIDEO_TOKEN = randomBytes(24).toString('base64url');
+  const tokens = JSON.stringify([...JSON.parse(TOKENS_JSON), { subject: 'portfolio', token_hash: sha256(VIDEO_TOKEN), scopes: ['ai:video'] }]);
+  const worker = await fakeWorker();
+  const gateway = await startWith(mediaEnv(worker.url, { API_TOKENS_JSON: tokens }));
+  try {
+    const { id } = await (await call(gateway.url, '/api/ai/media/requests', IMAGE_TOKEN, { body: createBody() })).json() as { id: string };
+    assert.equal((await call(gateway.url, `/api/ai/media/requests/${id}`, IMAGE_TOKEN)).status, 200);
+    assert.equal((await call(gateway.url, `/api/ai/media/requests/${id}`, VIDEO_TOKEN)).status, 404);
+  } finally {
+    await gateway.stop();
+    await close(worker.server);
+  }
+});
