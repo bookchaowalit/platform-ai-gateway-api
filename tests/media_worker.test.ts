@@ -394,3 +394,43 @@ test('DoD B2 the worker heartbeats every 60 s while the provider call runs', asy
     mock.timers.reset();
   }
 });
+
+test('Codex: a completed report lost to an outage is kept in R2 and delivered on the next lease, not closed submit_unknown', async () => {
+  const { env: e, sent, objects } = env();
+  const bucket = e.MEDIA_BUCKET as unknown as { get?: (key: string) => Promise<unknown>; delete?: (key: string) => Promise<void> };
+  bucket.get = async (key: string) => {
+    const object = objects.get(key);
+    return object ? { text: async () => new TextDecoder().decode(object.bytes) } : null;
+  };
+  bucket.delete = async (key: string) => { objects.delete(key); };
+  let down = true;
+  const reports: any[] = [];
+  let leases = 0;
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    if (path.endsWith('/lease')) {
+      leases += 1;
+      return new Response(JSON.stringify(leases === 1 ? leaseBody() : { ...leaseBody('submit_started'), lease_id: 'lease_2' }), { status: 200 });
+    }
+    const body = JSON.parse(String(init?.body));
+    if (path.endsWith('/report')) {
+      if (body.state === 'completed' && down) return new Response('{}', { status: 503 });
+      reports.push(body);
+    }
+    return new Response('{"ok":true}', { status: 200 });
+  }) as typeof fetch;
+  const adapter = fakeAdapter(async () => [PNG]);
+  const first = batch([await signedMessage()]);
+  await handleQueue(first.value, e, { fetch: fetchImpl, adapters: { fake: adapter } });
+  assert.equal(sent.length, 1, 'delayed replacement');
+  assert.ok([...objects.keys()].some((k) => k.startsWith('pending-reports/')), 'pending report kept');
+  down = false;
+  const second = batch([sent[0].body as SignedQueueMessage]);
+  await handleQueue(second.value, e, { fetch: fetchImpl, adapters: { fake: adapter } });
+  assert.equal(adapter.calls, 1, 'the provider is not called again');
+  const final = reports.at(-1);
+  assert.equal(final.state, 'completed');
+  assert.equal(final.lease_id, 'lease_2');
+  assert.equal(final.assets.length, 1);
+  assert.ok(![...objects.keys()].some((k) => k.startsWith('pending-reports/')), 'pending report removed once delivered');
+});

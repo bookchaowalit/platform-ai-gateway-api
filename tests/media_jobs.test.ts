@@ -800,3 +800,34 @@ test('DoD N5 rows older than 400 days are pruned; retention is clamped to the 30
     assert.equal((h.store.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n, 0, table);
   }
 });
+
+test('Codex: submit_started is refused while media is off (kill switch), including a replay', async () => {
+  const h = harness();
+  await h.jobs.create(caller, body(), {});
+  const id = h.sent[0].attempt_id;
+  const lease = (await startLease(h)).body as { lease_id: string };
+  const off = createMediaJobs({
+    db: h.store.db, record: (e) => h.store.record(e), registry: registry(), env: { ...h.env, AI_GATEWAY_MEDIA_ENABLED: '' },
+    payloadKeys: PAYLOAD_KEYS.ok ? PAYLOAD_KEYS.keys : undefined, queueKey: QUEUE_KEY, now: () => new Date(h.clock.now), enqueue: async () => undefined,
+  });
+  const refused = await off.report(id, { lease_id: lease.lease_id, report_seq: 1, state: 'submit_started' });
+  assert.equal(refused.status, 409);
+  assert.equal((refused.body as { error: string }).error, 'media_disabled');
+  assert.equal(attemptRow(h, id).status, 'leased');
+  // A replay of an already-recorded submit_started is refused too, so no paid call starts while off.
+  await h.jobs.report(id, { lease_id: lease.lease_id, report_seq: 1, state: 'submit_started' });
+  assert.equal((await off.report(id, { lease_id: lease.lease_id, report_seq: 1, state: 'submit_started' })).status, 409);
+});
+
+test('Codex: housekeeping still closes jobs when a later registry has a broken policy', async () => {
+  const h = harness();
+  await h.jobs.create(caller, body(), {});
+  const broken = { ...registry(), policy: null } as unknown as MediaGenerationRegistry;
+  const later = createMediaJobs({
+    db: h.store.db, record: (e) => h.store.record(e), registry: broken, env: h.env,
+    payloadKeys: PAYLOAD_KEYS.ok ? PAYLOAD_KEYS.keys : undefined, queueKey: QUEUE_KEY, now: () => new Date(h.clock.now), enqueue: async () => undefined,
+  });
+  h.clock.now += 61 * 60_000;
+  await later.housekeeping();
+  assert.equal(attemptRow(h, h.sent[0].attempt_id).status, 'failed');
+});
