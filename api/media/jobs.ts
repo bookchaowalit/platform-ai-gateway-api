@@ -617,6 +617,8 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
     const payloadNeeded = reason === 'start' && (attempt.status === 'queued' || attempt.status === 'leased' || attempt.status === 'submit_started');
     // No keyring (misconfiguration): refuse before granting anything, so the worker retries later.
     if (payloadNeeded && !deps.payloadKeys) return problem(503, 'media_disabled');
+    // The model or provider was removed by a later registry deploy: refuse before granting, retry later.
+    if (!registry.models[attempt.model_id] || !registry.providers[attempt.provider_id]) return problem(503, 'media_disabled', { detail: 'model is not in the current registry' });
     let refExpected: string | undefined;
     if (reason === 'webhook' && attempt.provider_job_ref) refExpected = await refMac(deps.queueKey, attempt.provider_job_ref);
     const objectPrefix = `${(selectRequest.get(attempt.request_id) as unknown as RequestRow).kind === 'image' ? 'images' : 'videos'}/${await subjectHash(subjectHashKey, attempt.subject_key)}/${at.toISOString().slice(0, 4)}/${at.toISOString().slice(5, 7)}/`;

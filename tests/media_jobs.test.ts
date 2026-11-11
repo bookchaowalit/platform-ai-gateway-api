@@ -601,3 +601,20 @@ test('Codex: a lease without a payload keyring is a retryable 503, not a crash o
   assert.equal(attemptRow(h, message.attempt_id).status, 'queued');
   assert.equal(attemptRow(h, message.attempt_id).lease_id, null);
 });
+
+test('a lease for a model removed from a later registry is a retryable 503, not a crash', async () => {
+  const h = harness();
+  await h.jobs.create(caller, body(), {});
+  const later = registry();
+  later.models['b-other'] = { ...later.models['a-photo'], provider_model: 'other' };
+  delete (later.models as Record<string, unknown>)['a-photo'];
+  later.profiles['social-photo'].models = ['b-other'];
+  const redeployed = createMediaJobs({
+    db: h.store.db, record: (e) => h.store.record(e), registry: later, env: h.env, payloadKeys: PAYLOAD_KEYS.ok ? PAYLOAD_KEYS.keys : undefined,
+    queueKey: QUEUE_KEY, now: () => new Date(h.clock.now), enqueue: async () => undefined,
+  });
+  const message = h.sent[0];
+  const result = await redeployed.lease(message.attempt_id, { reason: 'start', dispatch_no: message.dispatch_no, sig: message.sig });
+  assert.equal(result.status, 503);
+  assert.equal(attemptRow(h, message.attempt_id).status, 'queued');
+});
