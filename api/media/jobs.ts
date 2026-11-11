@@ -156,6 +156,7 @@ const PAYLOAD_KEEP_AFTER_DONE_MS = 60 * 60_000;
 const PAYLOAD_MAX_AGE_MS = 7 * 24 * 3_600_000;
 const IDEMPOTENCY_WINDOW_MS = 24 * 3_600_000;
 const TTL_MARGIN_MS = 30 * 60_000;
+const DEFAULT_JOB_TIMEOUT_MS = 30 * 60_000;
 
 function fail(status: number, error: string, extra: Record<string, unknown> = {}): MediaResult {
   return { status, body: { error, ...extra } };
@@ -815,6 +816,8 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
       }
       return fail(409, 'terminal');
     }
+    // Kill switch: no submit intent (new or replayed) while media is off; results of calls already made still land.
+    if (state === 'submit_started' && problems().length) return problem(409, 'media_disabled');
     if (leaseMatches && !leaseExpired(attempt, at) && seq === attempt.report_seq && state === 'submit_started' && attempt.status === 'submit_started') {
       // The worker retried a report whose response was lost: already applied, answer as before.
       return { status: 200, body: { ok: true, replay: true } };
@@ -982,7 +985,9 @@ export function createMediaJobs(deps: MediaJobsDeps): MediaJobs {
       const at = now();
       // Cleanup always runs; dispatching new provider work only while media is on (kill switch).
       const admissionOn = problems().length === 0;
-      const ttl = Math.max(registry.policy.job_timeout_ms, registry.policy.lease_wait_max_ms) + TTL_MARGIN_MS;
+      // A broken registry must not stop cleanup: fall back to the 30-minute defaults.
+      const policy = registryProblems.length ? undefined : registry.policy;
+      const ttl = Math.max(policy?.job_timeout_ms ?? DEFAULT_JOB_TIMEOUT_MS, policy?.lease_wait_max_ms ?? DEFAULT_JOB_TIMEOUT_MS) + TTL_MARGIN_MS;
       const due: string[] = [];
       for (const row of selectOpen.all() as unknown as AttemptRow[]) {
         let attempt: AttemptRow | null = row;

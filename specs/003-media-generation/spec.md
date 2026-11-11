@@ -670,6 +670,12 @@ in `tests/media_r2.test.ts`; the AC-16 Sentry case in `tests/sentry.test.ts`. Te
 - Asset reads expire after `AI_GATEWAY_MEDIA_RETENTION_DAYS` (default and maximum 30, the bucket rule); rows are pruned
   after 400 days.
 - An enabled registry model must name a real `provider_model` and at least one price.
+- `submit_started` (new or replayed) is refused with 409 `media_disabled` while media is off; results of provider calls
+  already made still land.
+- A completed report the worker cannot deliver (gateway down after retries) is kept in R2 at
+  `pending-reports/<attempt_id>.json` and delivered on the next lease in `submit_started`, so the provider is not called
+  again and the output is not lost; the object is deleted once the gateway acknowledges.
+- Housekeeping falls back to 30-minute timeouts when the registry fails validation, so cleanup never stops.
 
 ## 9. Change log
 
@@ -694,4 +700,4 @@ in `tests/media_r2.test.ts`; the AC-16 Sentry case in `tests/sentry.test.ts`. Te
 |---|---|---|---|---|
 | Spec ready (before code, DoR) | Reviewer (checker) | Fresh Claude reviewer / 2026-11-11 | **approve** (after revise rounds: 0.4, 0.5, 0.7) | round 1: 9 blocking + 9 non-blocking; round 2: 6 blocking + 7 non-blocking; all accepted; third pass revise (1 blocking) → fixed in 0.7; diff check **approve** (non-blocking N26–N31 fixed in 0.8) |
 | Spec ready (before code, DoR) | Approver | Owner / 2026-11-11 | approve; start P1a | Chat reply "อนุมัติ เริ่ม P1a" to the question "Approve SPEC-003 and start TDD of P1a?" (v0.10). Covers the `AGENTS.md` MCP line (applies in P1b). Q1–Q5 still open; Q5 decides where the P1a worker runs |
-| Implemented (DoD), P1a | Reviewer (checker) | Fresh Claude reviewer / 2026-11-11 | revise → fixed in b8fce4e (re-check pending) | 3 blocking (Sentry signed-URL scrub, missing tests, ledger fields) + 7 non-blocking, all accepted; tests 250 pass, docker smoke and wrangler dry-run re-run |
+| Implemented (DoD), P1a | Reviewer (checker) | Fresh Claude reviewer / 2026-11-11 | **approve** (revise → fixed in b8fce4e, re-check approve; later Codex fixes in the next commit) | 3 blocking (Sentry signed-URL scrub, missing tests, ledger fields) + 7 non-blocking, all accepted; tests 250 pass, docker smoke and wrangler dry-run re-run |

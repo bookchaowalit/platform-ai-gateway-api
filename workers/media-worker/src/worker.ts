@@ -20,8 +20,13 @@ export interface QueueLike {
 }
 
 export interface BucketLike {
-  put(key: string, value: ArrayBuffer | Uint8Array, options?: { httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> }): Promise<unknown>;
+  put(key: string, value: ArrayBuffer | Uint8Array | string, options?: { httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> }): Promise<unknown>;
+  get?(key: string): Promise<{ text(): Promise<string> } | null>;
+  delete?(key: string): Promise<void>;
 }
+
+/** A completed report that could not be delivered is kept here until a later lease delivers it. */
+const pendingReportKey = (attemptId: string) => `pending-reports/${attemptId}.json`;
 
 export interface WorkerEnv {
   MEDIA_QUEUE: QueueLike;
@@ -165,6 +170,8 @@ function gatewayClient(env: WorkerEnv, fetchImpl: typeof fetch) {
     // after a valid lease mean a token rotation in progress. All are retried later, never dropped.
     if (response.status >= 500 || response.status === 408 || response.status === 429
       || (action !== 'lease' && (response.status === 401 || response.status === 403))) {
+      // Fixed line, no body or token: lets an operator see a persistent 401/403 (wrong token) in the logs.
+      console.warn(JSON.stringify({ event: 'media.gateway_unavailable', action, status: response.status }));
       throw new GatewayDown(`gateway ${response.status}`);
     }
     let parsed: Record<string, unknown> = {};
@@ -238,6 +245,16 @@ async function processMessage(message: SignedQueueMessage, env: WorkerEnv, deps:
     await report({ state: 'failed', error_code: 'provider_error' });
     return 'ack';
   }
+  if (attempt.state === 'submit_started') {
+    // A completed report from an earlier invocation that never reached the gateway: deliver it now.
+    const pending = await env.MEDIA_BUCKET.get?.(pendingReportKey(message.attempt_id));
+    if (pending) {
+      const saved = JSON.parse(await pending.text()) as { assets: unknown[] };
+      const delivered = await report({ state: 'completed', assets: saved.assets });
+      if (delivered.status === 200 || delivered.body.error === 'terminal') await env.MEDIA_BUCKET.delete?.(pendingReportKey(message.attempt_id));
+      return 'ack';
+    }
+  }
   if (attempt.state === 'submit_started' && !adapter.supportsIdempotency) {
     // §4.7 rule 4: the previous worker may already have paid the provider; never submit twice.
     await report({ state: 'failed', error_code: 'submit_unknown' });
@@ -294,7 +311,15 @@ async function processMessage(message: SignedQueueMessage, env: WorkerEnv, deps:
       await report({ state: 'failed', error_code: 'provider_error' });
       return 'ack';
     }
-    await report({ state: 'completed', assets });
+    try {
+      await report({ state: 'completed', assets });
+    } catch (error) {
+      // Keep the result durable before handing the message back: the next lease delivers it (no re-run, no loss).
+      if (error instanceof GatewayDown) {
+        await env.MEDIA_BUCKET.put(pendingReportKey(message.attempt_id), JSON.stringify({ assets }), { httpMetadata: { contentType: 'application/json' } });
+      }
+      throw error;
+    }
     return 'ack';
   } finally {
     clearInterval(heartbeat);

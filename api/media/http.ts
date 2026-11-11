@@ -308,15 +308,14 @@ export function createMediaHttp(deps: MediaHttpDeps): MediaHttp {
   function startHousekeeping(intervalMs: number): () => void {
     if (!(intervalMs > 0)) return () => undefined;
     // One pass at startup: pending sends and expired leases from before a restart do not wait a tick.
-    setImmediate(() => {
-      jobs.housekeeping().catch(() => undefined);
-    });
     // Runs even while admission is off: open jobs must still time out, reservations close and payloads purge.
-    const timer = setInterval(() => {
+    const run = () => {
       jobs.housekeeping().catch((error: unknown) => {
         deps.log?.({ ts: now().toISOString(), event: 'media.housekeeping_failed', error_name: error instanceof Error ? error.name : 'unknown' });
       });
-    }, intervalMs);
+    };
+    setImmediate(run);
+    const timer = setInterval(run, intervalMs);
     timer.unref();
     return () => clearInterval(timer);
   }

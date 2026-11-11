@@ -20,7 +20,7 @@ function env(overrides: Partial<WorkerEnv> = {}) {
     MEDIA_DLQ: { send: async () => undefined, metrics: async () => ({ backlogCount: 0 }) },
     MEDIA_BUCKET: {
       put: async (key, value, options) => {
-        objects.set(key, { bytes: new Uint8Array(value as ArrayBuffer), contentType: options?.httpMetadata?.contentType, meta: options?.customMetadata });
+        objects.set(key, { bytes: typeof value === 'string' ? new TextEncoder().encode(value) : new Uint8Array(value as ArrayBuffer), contentType: options?.httpMetadata?.contentType, meta: options?.customMetadata });
         return {};
       },
     },
