@@ -13,22 +13,25 @@ flowchart TD
   C -->|"no"| X1["401 / 403"]
   C -->|"yes"| R0["Read JSON body, size cap"]
   R0 -->|"too large or invalid"| X0["413 / 400"]
-  R0 -->|"ok"| D{"Per-subject rate and concurrency OK? (local limiter, then shared quota in staged shared mode)"}
+  R0 -->|"ok"| D{"Local per-subject rate and concurrency OK?"}
   D -->|"no"| X2["429 Retry-After"]
-  D -->|"yes"| B0{"Global budget configured?"}
+  D -->|"yes"| SQ{"Staged shared mode on? Then shared request quota at platform-data"}
+  SQ -->|"quota exhausted"| X2b["429 shared quota"]
+  SQ -->|"platform-data unavailable"| X2c["503 admission unavailable"]
+  SQ -->|"off, or reserved"| B0{"Global budget configured?"}
   B0 -->|"no"| X8["503 budget_not_configured"]
   B0 -->|"yes"| F{"privacy_class"}
-  F -->|"public / internal, or private with scoped static token + subject route in AI_GATEWAY_PRIVATE_ROUTES_JSON + provider attestation"| G["Pick model and price: scoped static token subject in AI_GATEWAY_SUBJECT_MODELS_JSON, else profile default (JWT callers always default)"]
+  F -->|"public / internal, or private with scoped static token + subject route in AI_GATEWAY_PRIVATE_ROUTES_JSON + provider attestation"| G["Pick model and price: scoped static token whose subject and profile match AI_GATEWAY_SUBJECT_MODELS_JSON, else profile default model at the shared default rate card (JWT callers always default)"]
   F -->|"restricted, or private without all three"| X4["403 privacy_class_denied"]
-  G --> E{"Reserve cost for that model in global and subject monthly budget"}
+  G --> E{"Reserve cost for that model in the global budget, and the subject budget where one is set"}
   E -->|"no headroom"| X3["429 budget"]
   E -->|"reserved"| H["Call provider: text, tools, image input, json_schema output"]
   H --> I{"Retryable failure, fallback set, not a subject model, and private allowed on fallback?"}
-  I -->|"yes"| J["Record primary attempt row, release, reserve again at fallback price"]
+  I -->|"yes"| J["Record primary attempt row; local reservation released, shared one settled as unknown (stays held); reserve again at fallback price"]
   J -->|"no headroom"| X5["Primary error returned"]
   J -->|"reserved"| J2["Call fallback once"]
   I -->|"no, success"| K["Bounded response"]
-  I -->|"no, failure"| XE["Provider error, bounded detail (e.g. 429 provider_rate_limited, 504)"]
+  I -->|"no, failure"| XE["Provider error recorded in telemetry, bounded detail returned (e.g. 429 provider_rate_limited, 504)"]
   J2 -->|"success"| K
   J2 -->|"failure"| XE
   K --> L[("ai_run_telemetry: tokens, cost at per-model price, latency, no text")]
@@ -38,20 +41,24 @@ flowchart TD
   N --> O{"Media enabled and configured?"}
   O -->|"no"| X6["503 media_disabled"]
   O -->|"yes"| PV{"privacy_class public / internal?"}
-  PV -->|"private"| X9["403 privacy_class_refused"]
+  PV -->|"private or restricted"| X9["403 privacy_class_refused"]
   PV -->|"yes"| RT{"A model in the registry allowed for this subject?"}
   RT -->|"no"| X10["422 no_route"]
+  RT -->|"yes, dry_run"| DR["200 with estimated reservation and routing, no job"]
   RT -->|"yes"| O2{"Headroom in media, global and subject budgets?"}
   O2 -->|"no"| X7["429 budget_exceeded"]
-  O2 -->|"yes"| P["Record reservation and job in SQLite, 202 with request id (job pending)"]
-  P --> P2["Enqueue to media worker; housekeeping retries if the queue is down"]
+  O2 -->|"yes"| P["Commit reservation and job in SQLite"]
+  P --> P2["Try first enqueue to media worker; housekeeping retries if the queue is down"]
+  P2 --> P3["202 queued with request id"]
   P2 --> Q["Worker calls openai-image gpt-image-1.5, writes R2, reports back; gateway settles"]
-  P --> R["Caller polls GET /api/ai/media/requests/:id for status and signed URL"]
+  P3 --> R["Caller polls GET /api/ai/media/requests/:id for status and signed URL"]
 ```
 
 กระบวนการรอง: `POST /api/media/route` เลือก STT provider และ summary profile จาก `platform/media-transcription-routing.json` (metadata อย่างเดียว) และ `GET /api/ai/status` ให้สถานะ config, budget, rate limit และ media ซึ่ง MCP `ai-gateway-mcp` อ่านแบบ read-only
 
 Sources: `api/ai-gateway-service/service.ts` (routes `/healthz`, `/readyz`, `/api/ai/status`, `/api/ai/generate`, `/api/media/route`), `api/media/http.ts` (`/api/ai/media/requests`, `/api/ai/media/models`), `api/ai_gateway.ts` (subject models, private routes), `api/ai_tools.ts`, `api/workspace_auth.ts`, `api/identity_auth.ts`, `api/ai_budget.ts`, `api/ai_rate_limit.ts`, `api/media/jobs.ts`, commits `cf01ce4` (SPEC-004), `3a09c24` (openai-image)
+
+> ไดอะแกรมนี้เป็นภาพสรุปของกระบวนการ ไม่ได้ครอบทุก error code; โค้ดและเทสใน `api/` คือแหล่งจริง
 
 ## To-Be (จาก docs/shared-admission.md, specs/003-media-generation และ ops record)
 
